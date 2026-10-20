@@ -7,6 +7,7 @@ The `AlertRegistry` contract manages on-chain alert subscriptions for monitored 
 The contract supports:
 - **Owner-authenticated alert lifecycle management**: Creation, rule/label updates, status toggling, two-phase webhook hash rotation, TTL renewal, and deletion.
 - **Admin-controlled system parameters**: Initialization, administrative handover, per-owner active alert limits, administrative alert deletion, and configuration of an optional `WatcherRegistry` contract for read access gating.
+- **Optional timelock governance**: A configurable `TimelockDelay` that gates WASM upgrades and admin transfers behind a `propose`/`execute`/`cancel` flow.
 - **Read-access queries**: Direct lookup by ID, active status queries, queries by target contract or owner, paginated query variants, and optional cross-contract watcher-gating.
 
 ---
@@ -20,7 +21,9 @@ The contract supports:
 | **Owner & Contract Indices** | The lookup indexes mapping owners to alert IDs (`DataKey::OwnerIndex`) and watched contracts to alert IDs (`DataKey::ContractIndex`). |
 | **Active Status Index** | Fast-path boolean lookup table stored under `DataKey::AlertActive(id)`. |
 | **Monotonic ID Counter** | Global auto-incrementing identifier (`instance_key::NEXT_ID`, instance storage) ensuring unique alert IDs. |
-| **Admin Authority** | Privileged control over global operational limits (`LIMIT`), administrative removal (`remove_alert_by_admin`), admin transfer (`transfer_admin`), and watcher registry linking (`WATCHREG`). |
+| **Admin Authority** | Privileged control over global operational limits (`LIMIT`), administrative removal (`remove_alert_by_admin`), admin transfer (`transfer_admin`), watcher registry linking (`WATCHREG`), and the timelock configuration (`TimelockDelay`). |
+| **Contract WASM / Upgrade Authority** | The deployed contract code, replaceable only through the timelocked `upgrade` path when a timelock is configured. |
+| **Pending Timelock Proposals** | Staged `Upgrade` and `TransferAdmin` proposals awaiting execution after the configured delay elapses. |
 | **Storage State & TTL** | Persistent storage entries kept alive through automatic write-time renewal, owner-authenticated `renew_alert_ttl`, and permissionless `bump_alert`. |
 
 ---
@@ -33,6 +36,7 @@ The contract supports:
 - **SHA-256 Cryptographic Preimage Resistance**: SHA-256 is computationally infeasible to invert or collide, preventing attackers from forging raw URLs that produce matching hashes or deducing private URLs from on-chain hashes.
 - **WatcherRegistry Trust (when configured)**: If a `WatcherRegistry` address is configured via `set_watcher_registry`, `AlertRegistry` trusts `WatcherRegistryClient::is_watcher_authorized` to accurately report whether a querying address is an authorized watcher node.
 - **Off-Chain Watcher Node Fidelity**: Watcher nodes are assumed to faithfully read on-chain alert configs, match event triggers against registered rule descriptors, and dispatch HTTP notifications only to endpoints whose SHA-256 hash matches the on-chain record.
+- **Ledger Time Progression**: The timelock relies on the ledger timestamp advancing monotonically; the delay is measured against the ledger time recorded at proposal time.
 
 ---
 
@@ -68,16 +72,26 @@ The contract supports:
 - **Safe Permissionless TTL Bumping**: Anyone may call `bump_alert` to extend an alert's TTL up to `MAX_TTL` (~31 days), with values exceeding the cap safely clamped.
 - **Non-Mutating Renewal (`renew_alert_ttl`)**: Owners can renew storage TTL without mutating `updated_at`, preventing false positive triggers in off-chain incremental sync filters (`get_alerts_modified_since`).
 
+### 7. Instant Privileged Takeover (Timelocked Upgrade & Admin Transfer)
+- **Optional `TimelockDelay`**: When a non-zero `TimelockDelay` is configured, both WASM replacement (`upgrade`) and admin handover (`TransferAdmin`) are gated behind a two-step `propose`/`execute` flow. A single admin key can no longer instantly replace the contract code or hand off the admin role.
+- **Propose / Execute / Cancel Flow**:
+  - `propose_*` records a pending proposal (target WASM hash or new admin address) together with the ledger time at which it becomes executable (`proposed_at + TimelockDelay`). Proposing requires admin authorization.
+  - `execute_*` may only be called after the delay has elapsed; calling it early fails with `ContractError::TimelockNotElapsed`. Execution requires admin authorization and applies the staged change.
+  - `cancel_*` allows the admin to discard a pending proposal before execution, clearing the staged state.
+- **Raise-Only Delay Outside the Timelock**: The `TimelockDelay` value itself can only be *raised* through the normal (non-timelocked) admin path. Lowering the delay requires going through the timelock, so a compromised admin key cannot shorten the delay to zero and then instantly execute a pending upgrade or admin transfer. This mirrors the `WatcherRegistry` design.
+- **Timelock Applies While Paused**: The timelock gating is enforced independently of the contract's paused state. Even when the contract is paused, `upgrade` and `TransferAdmin` remain subject to the propose/execute delay — pausing does not provide a shortcut around the timelock, and the timelock does not provide a bypass around the pause.
+- **Audit Trail**: Proposal, execution, and cancellation transitions emit dedicated events so off-chain monitors can observe pending privileged changes during the delay window.
+
 ---
 
 ## What the Contract Does NOT Protect Against
 
-- **Compromised Private Keys**: If an alert owner's private key is compromised, the attacker can alter rules, rotate webhook hashes, or delete alerts. If the admin key is compromised, the attacker can modify limits, reassign the watcher registry, or delete arbitrary alerts.
+- **Compromised Private Keys**: If an alert owner's private key is compromised, the attacker can alter rules, rotate webhook hashes, or delete alerts. If the admin key is compromised, the attacker can modify limits, reassign the watcher registry, or delete arbitrary alerts. A configured `TimelockDelay` limits — but does not eliminate — the blast radius of a compromised admin key for `upgrade` and `TransferAdmin`: the attacker can still propose malicious changes, and those changes will execute once the delay elapses unless the legitimate admin (or governance) cancels them in time.
 - **Malicious or Vulnerable External Webhook Servers**: The contract cannot verify whether the server behind a hashed webhook URL is reachable, secure, or responding to HTTP payloads.
 - **Off-Chain Watcher Misbehavior or Collusion**: Once an address is registered as an authorized watcher in `WatcherRegistry`, `AlertRegistry` cannot detect if that watcher fails to dispatch alerts, alters event payloads, or leaks subscription data off-chain.
 - **Mempool Front-Running & Observation**: Proposed webhook hashes, rule updates, and admin transactions are visible in the public mempool before transaction inclusion.
 - **Storage Expiry from Prolonged Inactivity**: If an alert is neither written to, renewed, nor bumped for more than its remaining TTL ledgers, Stellar will archive the persistent storage entry. Archival recovery requires off-chain state restoration.
-- **Multi-Sig / Timelock Governance**: The admin role is a single address without built-in multi-signature or timelock requirements at the contract level (external multi-sig accounts must be used).
+- **Multi-Sig Governance**: The admin role is a single address. The optional `TimelockDelay` provides a time-based safety window for `upgrade` and `TransferAdmin`, but it is not a multi-signature scheme; external multi-sig accounts must still be used where multiple approvers are required. When no `TimelockDelay` is configured (delay of zero), `upgrade` and `TransferAdmin` execute immediately.
 
 ---
 
@@ -108,6 +122,14 @@ The contract supports:
 - **Vector**: Former admin or attacker attempts to call `transfer_admin` or `set_watcher_registry` after admin role transfer.
 - **Outcome**: `assert_admin()` checks stored `ADMIN` address; unauthorized calls return `ContractError::Unauthorized`.
 
+### 7. Compromised Admin Key Attempts Instant Upgrade or Admin Swap
+- **Vector**: An attacker who has obtained the admin key attempts to immediately replace the contract WASM via `upgrade` or hand off the admin role via `TransferAdmin` to lock out the legitimate admin.
+- **Outcome**: When a `TimelockDelay` is configured, the attacker can only `propose` the change. The change cannot be executed until the delay elapses; premature execution fails with `ContractError::TimelockNotElapsed`. During the delay window, the legitimate admin (or governance) can observe the proposal and `cancel` it. The attacker cannot shorten the delay to bypass this window, because lowering `TimelockDelay` is itself timelocked (raise-only outside the timelock).
+
+### 8. Attempt to Bypass the Timelock While Paused
+- **Vector**: Attacker (or a compromised admin) pauses the contract and then attempts to `upgrade` or `TransferAdmin` immediately, hoping the paused state provides a shortcut.
+- **Outcome**: The timelock gating is enforced regardless of paused state. The change still requires a prior `propose` and must wait for the delay to elapse; early execution fails with `ContractError::TimelockNotElapsed`.
+
 ---
 
 ## Security Properties Summary
@@ -123,6 +145,7 @@ The contract supports:
 | **Per-Owner Spam Throttling** | `get_active_alert_count_for_owner` <= `LIMIT` check | ✅ Enforced (when configured) |
 | **Rule Descriptor Validation** | Bounded list (<= 50) + recognized prefix check | ✅ Enforced |
 | **Safe TTL Extension & Clamping** | `bump_alert` clamped to `MAX_TTL`; write-time `DEFAULT_TTL` | ✅ Enforced |
+| **Timelocked Upgrade & Admin Transfer** | Optional `TimelockDelay` with `propose`/`execute`/`cancel`; raise-only delay; enforced even while paused | ✅ Enforced (when configured) |
 | **Re-entrancy Protection** | Soroban atomic execution model + synchronous updates | ✅ Protocol Guarantee |
 | **Replay Protection** | Stellar transaction sequence numbers | ✅ Protocol Guarantee |
 | **Off-Chain Watcher Fidelity** | Off-chain node integrity | ❌ External / Out of Scope |

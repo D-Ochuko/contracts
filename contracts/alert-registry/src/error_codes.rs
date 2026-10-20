@@ -39,5 +39,10 @@ mod tests {
         assert_eq!(ContractError::AlertSuspended as u32, 21);
         assert_eq!(ContractError::EmptyLabel as u32, 22);
         assert_eq!(ContractError::NoopWebhookRotation as u32, 23);
+        assert_eq!(ContractError::ActionAlreadyPending as u32, 24);
+        assert_eq!(ContractError::NoPendingAction as u32, 25);
+        assert_eq!(ContractError::TimelockNotExpired as u32, 26);
+        assert_eq!(ContractError::DelayTooLarge as u32, 27);
+        assert_eq!(ContractError::TimelockRequired as u32, 28);
     }
 }
