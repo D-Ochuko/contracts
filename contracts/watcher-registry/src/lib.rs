@@ -1403,7 +1403,7 @@ mod tests {
 
         let events = env.events().all();
         // Find the transfer event
-        let found = events.iter().any(|e| {
+        let found = events.events().iter().any(|e| {
             // topics are (symbol "admin", symbol "transfer")
             // we just verify at least one event was emitted after transfer
             let _ = e;
@@ -2052,7 +2052,7 @@ mod tests {
         client.add_admin(&admin, &second_admin);
 
         // At least one event was emitted (the add event)
-        assert!(!env.events().all().is_empty());
+        assert!(!env.events().all().events().is_empty());
     }
 
     // 21. remove_admin emits event
@@ -2064,7 +2064,7 @@ mod tests {
         client.add_admin(&admin, &second_admin);
         client.remove_admin(&admin, &second_admin);
 
-        assert!(!env.events().all().is_empty());
+        assert!(!env.events().all().events().is_empty());
     }
 
     // 22. remove_watcher emits event
@@ -2076,7 +2076,7 @@ mod tests {
         client.register_watcher(&admin, &watcher);
         client.remove_watcher(&admin, &watcher);
 
-        assert!(!env.events().all().is_empty());
+        assert!(!env.events().all().events().is_empty());
     }
 
     // 23. remove_watcher event has the correct topic and data shape
@@ -2090,12 +2090,20 @@ mod tests {
 
         let events = env.events().all();
         // Find an event with exactly 2 topics (watcher.remove shape)
-        let remove_event = events.iter().find(|(_, topics, _)| topics.len() == 2);
+        let remove_event = events.events().iter().find(|e| {
+            matches!(
+                &e.body,
+                soroban_sdk::xdr::ContractEventBody::V0(v0) if v0.topics.len() == 2
+            )
+        });
         assert!(remove_event.is_some(), "expected a watcher.remove event");
 
         // Verify data is the watcher address
-        let (_, _, data) = remove_event.unwrap();
-        let emitted_watcher: Address = soroban_sdk::FromVal::from_val(&env, &data);
+        let data = match &remove_event.unwrap().body {
+            soroban_sdk::xdr::ContractEventBody::V0(v0) => v0.data.clone(),
+        };
+        let emitted_watcher: Address =
+            soroban_sdk::TryFromVal::try_from_val(&env, &data).expect("data decodes as address");
         assert_eq!(emitted_watcher, watcher);
     }
 
@@ -2111,7 +2119,7 @@ mod tests {
         // Only the admin.init event from setup() should exist; no watcher.remove
         let events = env.events().all();
         assert_eq!(
-            events.len(),
+            events.events().len(),
             0,
             "no watcher.remove event expected for unregistered watcher"
         );
@@ -2232,7 +2240,7 @@ mod tests {
         client.replace_watcher(&admin, &old, &new);
 
         // At least two events emitted (remove + replace)
-        assert!(env.events().all().len() >= 2);
+        assert!(env.events().all().events().len() >= 2);
     }
 
     // ── get_watchers_paginated tests ─────────────────────────────────────────
@@ -2421,6 +2429,17 @@ mod tests {
         }
         assert_eq!(client.get_watcher_count(), MAX_WATCHERS);
 
+        let overflow = Address::generate(&env);
+        assert_eq!(
+            client
+                .try_register_watcher(&admin, &overflow)
+                .unwrap_err()
+                .unwrap(),
+            ContractError::MaxWatchersReached
+        );
+        assert_eq!(client.get_watchers().len(), MAX_WATCHERS);
+    }
+
     #[test]
     #[should_panic(expected = "Error(Auth, InvalidAction)")]
     fn test_propose_admin_transfer_requires_auth() {
@@ -2512,6 +2531,12 @@ mod tests {
         assert_eq!(
             client
                 .try_upgrade(&attacker, &wasm_hash)
+                .unwrap_err()
+                .unwrap(),
+            ContractError::Unauthorized
+        );
+    }
+
     // ── register_watchers (batch) tests ──────────────────────────────────────
 
     // 31. Happy path — register_watchers registers all new addresses
@@ -2870,6 +2895,8 @@ mod tests {
 
         assert_eq!(client.get_watchers().len(), 0);
         assert_eq!(client.get_watcher_count(), 0);
+    }
+
     // 34. register_watchers emits one event per newly-added watcher
     #[test]
     fn test_register_watchers_emits_one_event_per_watcher() {
@@ -2881,7 +2908,9 @@ mod tests {
 
         client.register_watchers(&admin, &vec![&env, w1, w2]);
 
-        assert_eq!(env.events().all().len(), 2);
+        assert_eq!(env.events().all().events().len(), 2);
+    }
+
     // 31. self-replace (old == new) is a no-op — no spurious watcher.remove
     #[test]
     fn test_replace_watcher_self_replace_emits_no_events() {
@@ -2892,12 +2921,14 @@ mod tests {
         client.replace_watcher(&admin, &w, &w);
 
         assert_eq!(
-            env.events().all().len(),
+            env.events().all().events().len(),
             0,
             "self-replace must not emit any watcher event"
         );
         assert!(client.is_watcher_authorized(&w));
         assert_eq!(client.get_watcher_count(), 1);
+    }
+
     // ── Role policy tests ─────────────────────────────────────────────────────
 
     // 31. An address may hold both the admin and watcher roles at once.

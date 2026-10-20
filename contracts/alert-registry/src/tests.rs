@@ -320,6 +320,8 @@ fn test_upgrade_requires_initialized_admin() {
         client.try_upgrade(&caller, &wasm_hash).unwrap_err().unwrap(),
         ContractError::NotInitialized
     );
+}
+
 // ── Pause / circuit-breaker tests ────────────────────────────────────────
 
 #[test]
@@ -3380,6 +3382,9 @@ fn test_set_watcher_registry_recovers_after_invalid_attempt() {
     assert_eq!(
         alert_client.get_watcher_registry().unwrap(),
         watcher_contract_id
+    );
+}
+
 // 17b. clear_watcher_registry disables gating; set_watcher_registry can
 // re-enable it afterward.
 #[test]

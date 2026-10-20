@@ -92,7 +92,7 @@ fn test_regression_remove_watcher_unregistered_emits_no_event() {
 
     let events = env.events().all();
     assert_eq!(
-        events.len(),
+        events.events().len(),
         0,
         "No event should be emitted when removing an unregistered watcher"
     );
@@ -116,12 +116,16 @@ fn test_regression_clear_all_watchers_emits_one_event_per_removed_watcher() {
     client.clear_all_watchers(&admin);
 
     let events = env.events().all();
+    let events = events.events();
     // Should have emitted 2 remove events (one for each removed watcher)
     assert_eq!(events.len(), 2);
-    for i in 0..events.len() {
-        let (_, topics, data) = events.get(i).unwrap();
-        assert_eq!(topics.len(), 2);
-        let emitted_addr: Address = soroban_sdk::FromVal::from_val(&env, &data);
+    for event in events.iter() {
+        let v0 = match &event.body {
+            soroban_sdk::xdr::ContractEventBody::V0(v0) => v0,
+        };
+        assert_eq!(v0.topics.len(), 2);
+        let emitted_addr: Address = soroban_sdk::TryFromVal::try_from_val(&env, &v0.data)
+            .expect("event data decodes as an address");
         assert!(emitted_addr == w1 || emitted_addr == w2);
     }
 
