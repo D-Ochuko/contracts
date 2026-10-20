@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},
     vec, Address, BytesN, Env, FromVal, String, Symbol, Vec,
@@ -1397,6 +1397,8 @@ fn test_clear_watcher_registry_emits_disable_event() {
     let registry_client =
         watcher_registry::WatcherRegistryClient::new(&env, &registry_id);
     registry_client.initialize(&admin);
+    let watcher = Address::generate(&env);
+    registry_client.register_watcher(&admin, &watcher);
     client.set_watcher_registry(&admin, &registry_id);
     client.clear_watcher_registry(&admin);
 
