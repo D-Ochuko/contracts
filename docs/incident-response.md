@@ -14,10 +14,18 @@ Understanding what an attacker can and cannot do with a compromised admin key de
   * Update the per-owner alert limit via `set_per_owner_alert_limit`.
   * Change the linked `WatcherRegistry` contract address via `set_watcher_registry`.
   * Delete any alert from storage via `remove_alert_by_admin`.
+  * Pause and unpause the contract via `pause` / `unpause`.
+  * Appoint or rotate the pause-only guardian via `set_guardian`.
+* **Guardian capabilities (pause-only role):**
+  * Trip the circuit-breaker via `pause`.
+  * **Cannot** `unpause` — only the admin can resume the contract.
+  * **Cannot** upgrade the contract, change limits, rotate the watcher registry, or remove alerts.
+  * Intended for on-call operators and monitoring bots so they can halt operations without holding a key that can also upgrade the contract or change limits.
 * **What an attacker CANNOT do:**
   * Register new alerts under a user's address (requires user `owner.require_auth()`).
   * Modify existing user alerts, rules, or webhook URLs (requires user `caller.require_auth()`).
   * Impersonate alert owners.
+  * Unpause the contract with a compromised guardian key (guardian is pause-only).
 
 ### WatcherRegistry
 * **Admin capabilities:**
@@ -113,6 +121,34 @@ stellar contract invoke \
   --new_admin <NEW_SECURE_ADMIN_ADDRESS>
 ```
 
+### Action 2.3: Trip the Circuit-Breaker (Guardian)
+While admin rotation is in progress, the pause-only guardian (on-call operator or monitoring bot) can halt `AlertRegistry` operations without holding the admin key:
+
+```bash
+# Guardian pauses AlertRegistry (pause-only; cannot unpause)
+stellar contract invoke \
+  --id <ALERT_REGISTRY_CONTRACT_ID> \
+  --source-account <GUARDIAN_SECRET> \
+  --network <NETWORK> \
+  -- \
+  pause \
+  --caller <GUARDIAN_ADDRESS>
+```
+
+* The guardian **cannot** `unpause`; only the admin can resume the contract once rotation is verified.
+* The guardian **cannot** upgrade the contract, change limits, rotate the watcher registry, or remove alerts.
+* If the guardian key itself is suspected, the admin rotates it via `set_guardian`:
+  ```bash
+  stellar contract invoke \
+    --id <ALERT_REGISTRY_CONTRACT_ID> \
+    --source-account <NEW_ADMIN_SECRET> \
+    --network <NETWORK> \
+    -- \
+    set_guardian \
+    --admin <NEW_ADMIN_ADDRESS> \
+    --guardian <NEW_GUARDIAN_ADDRESS>
+  ```
+
 ---
 
 ## 4. Phase 3: Verification of Rotation
@@ -133,9 +169,18 @@ stellar contract invoke \
   --network <NETWORK> \
   -- \
   get_admins
+
+# Check AlertRegistry guardian
+stellar contract invoke \
+  --id <ALERT_REGISTRY_CONTRACT_ID> \
+  --network <NETWORK> \
+  -- \
+  get_guardian
 ```
 
 * Ensure the compromised address is **not** present in either query result.
+* If the compromised key was the guardian, rotate it via `set_guardian` (admin only) and confirm with `get_guardian`.
+* Only the admin can `unpause` the contract; resume operations after rotation is verified.
 
 ---
 

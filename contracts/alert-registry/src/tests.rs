@@ -398,6 +398,349 @@ fn test_pause_unauthorized() {
     assert_eq!(result.unwrap_err().unwrap(), ContractError::Unauthorized);
 }
 
+// ── Guardian role tests (#390) ───────────────────────────────────────────
+
+// set_guardian by the admin succeeds and emits an ("admin", "guardian") event
+#[test]
+fn test_set_guardian_by_admin_emits_event() {
+    use soroban_sdk::{symbol_short, testutils::Events as _};
+
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let guardian = Address::generate(&env);
+
+    client.set_guardian(&admin, &guardian);
+
+    let event = env
+        .events()
+        .all()
+        .iter()
+        .find(|(_, topics, _)| {
+            topics.len() == 2
+                && Symbol::from_val(&env, &topics.get(0).unwrap()) == symbol_short!("admin")
+                && Symbol::from_val(&env, &topics.get(1).unwrap()) == symbol_short!("guardian")
+        })
+        .expect("admin.guardian event must be emitted");
+    let (_, _, data) = event;
+    let emitted: Address = soroban_sdk::FromVal::from_val(&env, &data);
+    assert_eq!(emitted, guardian);
+}
+
+// Only the admin may set the guardian
+#[test]
+fn test_set_guardian_non_admin_rejected() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let attacker = Address::generate(&env);
+    let guardian = Address::generate(&env);
+
+    assert_eq!(
+        client
+            .try_set_guardian(&attacker, &guardian)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::Unauthorized
+    );
+}
+
+// get_guardian returns the stored address
+#[test]
+fn test_get_guardian_returns_stored_address() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let guardian = Address::generate(&env);
+
+    client.set_guardian(&admin, &guardian);
+    assert_eq!(client.get_guardian(), Some(guardian));
+}
+
+// The guardian may pause the contract
+#[test]
+fn test_guardian_can_pause() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let guardian = Address::generate(&env);
+    client.set_guardian(&admin, &guardian);
+
+    client.pause(&guardian);
+    assert!(client.is_paused());
+}
+
+// The guardian may never unpause
+#[test]
+fn test_guardian_cannot_unpause() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let guardian = Address::generate(&env);
+    client.set_guardian(&admin, &guardian);
+
+    client.pause(&guardian);
+    assert_eq!(
+        client.try_unpause(&guardian).unwrap_err().unwrap(),
+        ContractError::Unauthorized
+    );
+    assert!(client.is_paused());
+}
+
+// The admin retains full pause/unpause control alongside the guardian
+#[test]
+fn test_admin_can_still_pause_and_unpause_with_guardian() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let guardian = Address::generate(&env);
+    client.set_guardian(&admin, &guardian);
+
+    client.pause(&admin);
+    assert!(client.is_paused());
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+}
+
+// Rotating the guardian replaces the previous guardian
+#[test]
+fn test_guardian_rotation_replaces_previous() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    let old_guardian = Address::generate(&env);
+    let new_guardian = Address::generate(&env);
+
+    client.set_guardian(&admin, &old_guardian);
+    client.set_guardian(&admin, &new_guardian);
+
+    assert_eq!(client.get_guardian(), Some(new_guardian));
+
+    // The old guardian can no longer pause.
+    assert_eq!(
+        client.try_pause(&old_guardian).unwrap_err().unwrap(),
+        ContractError::Unauthorized
+    );
+    // The new guardian can.
+    client.pause(&new_guardian);
+    assert!(client.is_paused());
+}
+
+// ── Alert expiry tests (#391) ────────────────────────────────────────────
+
+// get_alert_active is true before expiry and false at/after expiry
+#[test]
+fn test_alert_expiry_get_alert_active() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let id = client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Alert"),
+        &hash64(&env),
+        &vec![&env],
+        &Some(200u32),
+    );
+
+    // Before expiry
+    env.ledger().with_mut(|li| li.sequence_number = 199);
+    assert_eq!(client.get_alert_active(&owner, &id), Some(true));
+
+    // Exactly at expiry
+    env.ledger().with_mut(|li| li.sequence_number = 200);
+    assert_eq!(client.get_alert_active(&owner, &id), Some(false));
+
+    // After expiry
+    env.ledger().with_mut(|li| li.sequence_number = 201);
+    assert_eq!(client.get_alert_active(&owner, &id), Some(false));
+}
+
+// get_active_alerts_for_contract excludes expired alerts
+#[test]
+fn test_alert_expiry_get_active_alerts_for_contract() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Expiring"),
+        &hash64c(&env, '1'),
+        &vec![&env],
+        &Some(150u32),
+    );
+    client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Permanent"),
+        &hash64c(&env, '2'),
+        &vec![&env],
+        &None,
+    );
+
+    // Before expiry both are active.
+    env.ledger().with_mut(|li| li.sequence_number = 149);
+    assert_eq!(
+        client.get_active_alerts_for_contract(&owner, &target).len(),
+        2
+    );
+
+    // After expiry only the permanent one remains.
+    env.ledger().with_mut(|li| li.sequence_number = 150);
+    let active = client.get_active_alerts_for_contract(&owner, &target);
+    assert_eq!(active.len(), 1);
+    assert_eq!(active.get(0).unwrap().label, str(&env, "Permanent"));
+}
+
+// get_active_alert_count excludes expired alerts
+#[test]
+fn test_alert_expiry_get_active_alert_count() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Expiring"),
+        &hash64c(&env, '1'),
+        &vec![&env],
+        &Some(120u32),
+    );
+    client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Permanent"),
+        &hash64c(&env, '2'),
+        &vec![&env],
+        &None,
+    );
+
+    env.ledger().with_mut(|li| li.sequence_number = 119);
+    assert_eq!(client.get_active_alert_count(&owner, &target), 2);
+
+    env.ledger().with_mut(|li| li.sequence_number = 120);
+    assert_eq!(client.get_active_alert_count(&owner, &target), 1);
+}
+
+// get_alerts_modified_since treats expired alerts as inactive
+#[test]
+fn test_alert_expiry_get_alerts_modified_since() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Expiring"),
+        &hash64c(&env, '1'),
+        &vec![&env],
+        &Some(110u32),
+    );
+
+    // Before expiry the alert is reported active.
+    env.ledger().with_mut(|li| li.sequence_number = 109);
+    let results = client.get_alerts_modified_since(&0u64, &0u32, &u32::MAX);
+    assert_eq!(results.len(), 1);
+    assert!(results.get(0).unwrap().active);
+
+    // After expiry the alert is still returned but reported inactive.
+    env.ledger().with_mut(|li| li.sequence_number = 110);
+    let results = client.get_alerts_modified_since(&0u64, &0u32, &u32::MAX);
+    assert_eq!(results.len(), 1);
+    assert!(!results.get(0).unwrap().active);
+}
+
+// Explicit deactivation still works and interacts correctly with expiry
+#[test]
+fn test_alert_expiry_explicit_deactivation() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let id = client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Alert"),
+        &hash64(&env),
+        &vec![&env],
+        &Some(500u32),
+    );
+
+    // Explicitly deactivate before expiry.
+    client.update_alert(&owner, &id, &vec![&env], &false, &Some(500u32));
+    assert_eq!(client.get_alert_active(&owner, &id), Some(false));
+
+    // Reactivate; still before expiry so it is active again.
+    client.update_alert(&owner, &id, &vec![&env], &true, &Some(500u32));
+    env.ledger().with_mut(|li| li.sequence_number = 499);
+    assert_eq!(client.get_alert_active(&owner, &id), Some(true));
+
+    // Past expiry it is inactive even though `active` is true.
+    env.ledger().with_mut(|li| li.sequence_number = 500);
+    assert_eq!(client.get_alert_active(&owner, &id), Some(false));
+}
+
+// update_alert can set and clear the expiry
+#[test]
+fn test_alert_expiry_update_alert_set_and_clear() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let id = client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Alert"),
+        &hash64(&env),
+        &vec![&env],
+        &None,
+    );
+
+    // Set an expiry in the past — immediately inactive.
+    client.update_alert(&owner, &id, &vec![&env], &true, &Some(50u32));
+    assert_eq!(client.get_alert_active(&owner, &id), Some(false));
+
+    // Clear the expiry — active again.
+    client.update_alert(&owner, &id, &vec![&env], &true, &None);
+    assert_eq!(client.get_alert_active(&owner, &id), Some(true));
+}
+
+// Removing an alert clears its expiry entry
+#[test]
+fn test_alert_expiry_cleared_on_remove() {
+    let (env, client) = setup();
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let id = client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Alert"),
+        &hash64(&env),
+        &vec![&env],
+        &Some(200u32),
+    );
+
+    client.remove_alert(&owner, &id);
+
+    // The alert is gone entirely.
+    assert!(client.get_alert(&owner, &id).is_none());
+    assert!(client.get_alert_active(&owner, &id).is_none());
+    assert_eq!(client.get_active_alert_count(&owner, &target), 0);
+}
+
 // 5. Unauthorized remove rejected
 #[test]
 fn test_remove_unauthorized() {

@@ -114,6 +114,10 @@ pub enum DataKey {
     /// [`AlertRegistry::propose_admin_transfer`], pending its own acceptance
     /// via [`AlertRegistry::accept_admin_transfer`].
     PendingAdminTransfer,
+    /// Stores the optional ledger sequence at which an alert stops being
+    /// considered active, keyed by alert ID. A separate key rather than an
+    /// [`AlertConfig`] field, so stored configs keep their encoding.
+    AlertExpiry(u64),
 }
 
 /// Keys of the entries in the contract's **instance** storage.
@@ -144,6 +148,9 @@ pub mod instance_key {
     pub const LIVE: Symbol = symbol_short!("LIVE");
     /// `Address` of the optional `WatcherRegistry` used for read gating.
     pub const WATCHREG: Symbol = symbol_short!("WATCHREG");
+    /// `Address` of the optional guardian, allowed to `pause` but never
+    /// `unpause` (see [`crate::AlertRegistry::set_guardian`]).
+    pub const GUARDIAN: Symbol = symbol_short!("GUARDIAN");
 }
 
 /// Errors returned by `AlertRegistry` entry points.
@@ -215,6 +222,9 @@ pub enum ContractError {
     /// Returned by `propose_webhook` when the proposed hash is already live
     /// or already pending.
     NoopWebhookRotation = 23,
+    /// Returned by `unpause` when the caller is the guardian rather than the
+    /// admin: the guardian may pause but never unpause.
+    NotGuardian = 24,
 }
 
 // ── Data types ───────────────────────────────────────────────────────────────
@@ -881,6 +891,127 @@ impl AlertRegistry {
     /// watcher-gating has not been enabled.
     pub fn get_watcher_registry(env: Env) -> Option<Address> {
         env.storage().instance().get(&instance_key::WATCHREG)
+    }
+
+    /// Set (or clear) the optional guardian address (admin only).
+    ///
+    /// The guardian is an on-call operator or monitoring bot that may trip the
+    /// circuit-breaker with [`AlertRegistry::pause`] but can never
+    /// [`AlertRegistry::unpause`] or perform any other admin action. This lets
+    /// a low-trust key respond to incidents without also holding the power to
+    /// upgrade the contract or change limits.
+    ///
+    /// Passing `None` clears the guardian.
+    ///
+    /// # Auth
+    /// Requires a valid Stellar auth signature from `admin`.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::NotInitialized`] if the contract has not been
+    /// initialized.
+    /// Returns [`ContractError::Unauthorized`] if `admin` is not the admin.
+    /// Returns [`ContractError::Paused`] while the contract is paused.
+    ///
+    /// # Events
+    /// Emits `(Symbol("admin"), Symbol("guardian"))` with data
+    /// `(admin: Address, guardian: Option<Address>)`.
+    pub fn set_guardian(
+        env: Env,
+        admin: Address,
+        guardian: Option<Address>,
+    ) -> Result<(), ContractError> {
+        admin.require_auth();
+        Self::assert_admin(&env, &admin)?;
+        Self::assert_not_paused(&env)?;
+
+        match &guardian {
+            Some(g) => env.storage().instance().set(&instance_key::GUARDIAN, g),
+            None => env.storage().instance().remove(&instance_key::GUARDIAN),
+        }
+        Self::extend_instance_ttl(&env);
+
+        env.events().publish(
+            (symbol_short!("admin"), symbol_short!("guardian")),
+            (admin, guardian),
+        );
+        Ok(())
+    }
+
+    /// Return the configured guardian address, or `None` if none is set.
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        env.storage().instance().get(&instance_key::GUARDIAN)
+    }
+
+    /// Set (or clear) the optional ledger at which an alert automatically
+    /// stops being considered active.
+    ///
+    /// Owners watching a contract for a fixed window (an audit, a token
+    /// launch) can set an expiry so they do not have to remember to
+    /// deactivate later. Storage TTL is not a substitute: it archives the
+    /// record instead of deactivating it. Once
+    /// `active_until_ledger <= env.ledger().sequence()`, the active getters
+    /// and sync results treat the alert as inactive even though its stored
+    /// `active` flag is untouched.
+    ///
+    /// Passing `None` clears any expiry.
+    ///
+    /// # Auth
+    /// Requires a valid Stellar auth signature from `caller`, who must own
+    /// the alert.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::AlertNotFound`] if `config_id` does not exist.
+    /// Returns [`ContractError::Unauthorized`] if `caller` is not the owner.
+    /// Returns [`ContractError::Paused`] while the contract is paused.
+    ///
+    /// # Events
+    /// Emits `(Symbol("alert"), Symbol("expiry"))` with data
+    /// `(id: u64, caller: Address, active_until_ledger: Option<u32>)`.
+    pub fn set_alert_expiry(
+        env: Env,
+        caller: Address,
+        config_id: u64,
+        active_until_ledger: Option<u32>,
+    ) -> Result<(), ContractError> {
+        caller.require_auth();
+        Self::assert_not_paused(&env)?;
+
+        let config = Self::load_alert(&env, config_id)?;
+        Self::assert_owner(&config, &caller)?;
+
+        let key = DataKey::AlertExpiry(config_id);
+        match active_until_ledger {
+            Some(ledger) => {
+                env.storage().persistent().set(&key, &ledger);
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&key, DEFAULT_TTL, DEFAULT_TTL);
+            }
+            None => env.storage().persistent().remove(&key),
+        }
+
+        env.events().publish(
+            (symbol_short!("alert"), symbol_short!("expiry")),
+            (config_id, caller, active_until_ledger),
+        );
+        Ok(())
+    }
+
+    /// Return the ledger at which the alert stops being considered active, or
+    /// `None` if no expiry is set (see [`AlertRegistry::set_alert_expiry`]).
+    pub fn get_alert_expiry(env: Env, config_id: u64) -> Option<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AlertExpiry(config_id))
+    }
+
+    /// Return `true` if the alert has an expiry that is at or before the
+    /// current ledger sequence, i.e. it should be treated as inactive.
+    pub fn is_alert_expired(env: Env, config_id: u64) -> bool {
+        match Self::get_alert_expiry(env.clone(), config_id) {
+            Some(until) => until <= env.ledger().sequence(),
+            None => false,
+        }
     }
 
     /// Return `true` if watcher-gating is currently enabled (a `WatcherRegistry`
