@@ -1,39 +1,3 @@
-# WatcherRegistry
-
-> Part of [stellar-txwatch-contracts](https://github.com/Tx-wat/stellar-txwatch-contracts)
-
-On-chain registry for authorized watcher node addresses. An admin (or set of
-admins) controls which off-chain watcher nodes are permitted to interact with
-the `AlertRegistry` contract. Any caller can query whether a given address is
-authorized.
-
-This contract is a clean, self-contained example of common Soroban patterns
-and is suitable for use as a reference implementation.
-
-## Key patterns demonstrated
-
-- **`require_auth()` for admin-gated mutations** — every state-changing
-  function calls `admin.require_auth()` as its first line, delegating
-  signature verification entirely to the Stellar protocol.
-- **Multi-admin set** — the admin role is held by a `Vec<Address>` rather
-  than a single address, eliminating the single-point-of-failure of a sole
-  admin while keeping the authorization model simple and auditable.
-- **Idempotent registration** — `register_watcher` and `add_admin` are
-  no-ops when the address is already present, making them safe to call
-  multiple times without side effects.
-- **On-chain audit events** — every privileged mutation emits a
-  `soroban_sdk::events` entry so changes are visible on-chain and
-  indexable off-chain.
-- **`#[contracterror]` enum** — typed error codes (`AlreadyInitialized`,
-  `Unauthorized`, `NotInitialized`, `LastAdmin`) instead of raw panics,
-  giving callers structured error handling.
-- **Instance storage** for all state. Three entries live in instance storage:
-  the admin set (`DataKey::Admins`, a `Vec<Address>`), the authorized watcher
-  list (`DataKey::Watchers`, a `Vec<Address>`), and a cached watcher count
-  (`W_CNT`, a `u32`). This suits a small, frequently-accessed registry.
-- **Last-admin guard** — `remove_admin` refuses to remove the final admin,
-  preventing the contract from becoming permanently unmanageable.
-
 ## Build
 
 ```bash
@@ -46,8 +10,38 @@ cargo build --release --target wasm32-unknown-unknown
 cargo test
 ```
 
-The test suite covers happy paths, unauthorized rejections, idempotency,
-multi-admin operations, and event emission.
+The test suite covers happy paths, unauthorized rejections, idempotency, multi-admin operations, and event emission.
+
+## Contract spec golden file
+
+Every public function and error discriminant exposed by this contract is pinned in
+`contracts/watcher-registry/spec.golden.json`. That file is extracted from the
+built WASM with `stellar contract info interface --output json` and verified in CI
+so that renaming or removing an entrypoint (which would silently break every
+generated binding) fails a PR before it lands.
+
+### Regenerate
+
+Only regenerate after rebuilding and re-optimizing the release WASM:
+
+```bash
+cargo build --release --target wasm32-unknown-unknown --locked -p alert-registry -p watcher-registry
+stellar contract optimize --wasm target/wasm32-unknown-unknown/release/alert_registry.wasm
+stellar contract optimize --wasm target/wasm32-unknown-unknown/release/watcher_registry.wasm
+bash scripts/update-spec-golden.sh
+```
+
+Then commit the new `contracts/alert-registry/spec.golden.json` (and/or
+`contracts/watcher-registry/spec.golden.json`) alongside the change that required it.
+
+### Same check in CI
+
+```bash
+bash scripts/spec-golden.sh
+```
+
+or `make spec-check`. The CI job `spec-golden` runs this check on every PR and push
+to `main`.
 
 ## Deploy (testnet)
 
@@ -89,5 +83,4 @@ See [bindings/watcher-registry](../../bindings/watcher-registry/README.md).
 See [docs/watcher-registry.md](../../docs/watcher-registry.md).
 
 ## License
-
 MIT
