@@ -969,9 +969,6 @@ impl AlertRegistry {
         admin.require_auth();
         Self::assert_admin(&env, &admin)?;
         Self::assert_not_paused(&env)?;
-        env.storage()
-            .instance()
-            .set(&symbol_short!("CLIMIT"), &limit);
         env.storage().instance().set(&instance_key::CLIMIT, &limit);
         Self::extend_instance_ttl(&env);
 
@@ -1014,9 +1011,6 @@ impl AlertRegistry {
         admin.require_auth();
         Self::assert_admin(&env, &admin)?;
         Self::assert_not_paused(&env)?;
-        env.storage()
-            .instance()
-            .set(&symbol_short!("GLIMIT"), &limit);
         env.storage().instance().set(&instance_key::GLIMIT, &limit);
         Self::extend_instance_ttl(&env);
         env.events().publish(
@@ -1101,7 +1095,6 @@ impl AlertRegistry {
         admin.require_auth();
         Self::assert_admin(&env, &admin)?;
         Self::assert_not_paused(&env)?;
-        env.storage().instance().remove(&symbol_short!("WATCHREG"));
         env.storage().instance().remove(&instance_key::WATCHREG);
         Self::extend_instance_ttl(&env);
         env.events().publish(
