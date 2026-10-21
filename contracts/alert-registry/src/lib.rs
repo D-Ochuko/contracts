@@ -2276,6 +2276,8 @@ impl AlertRegistry {
     /// Returns [`ContractError::NotAWatcher`] if a watcher registry is configured
     /// and `querier` is not a registered watcher.
     #[deprecated(
+        since = "0.3.0",
+        note = "Use `get_contract_alerts_paginated` instead to avoid exceeding read limits on large indexes"
         since = "0.2.0",
         note = "unbounded read; prefer get_contract_alerts_paginated (removed in 0.4.0)"
     )]
@@ -2306,6 +2308,8 @@ impl AlertRegistry {
     /// Returns [`ContractError::NotAWatcher`] if a watcher registry is configured
     /// and `querier` is not a registered watcher.
     #[deprecated(
+        since = "0.3.0",
+        note = "Use `get_active_contract_alerts_paginated` instead to avoid exceeding read limits on large indexes"
         since = "0.2.0",
         note = "unbounded read; prefer get_active_contract_alerts_paged (removed in 0.4.0)"
     )]
@@ -2333,6 +2337,8 @@ impl AlertRegistry {
     /// Returns [`ContractError::NotAWatcher`] if a watcher registry is configured
     /// and `querier` is not a registered watcher.
     #[deprecated(
+        since = "0.3.0",
+        note = "Use `get_alerts_by_owner_paginated` instead to avoid exceeding read limits on large indexes"
         since = "0.2.0",
         note = "unbounded read; prefer get_alerts_by_owner_paginated (removed in 0.4.0)"
     )]
@@ -2362,6 +2368,20 @@ impl AlertRegistry {
     /// Unlike [`AlertRegistry::get_alerts_by_owner`], this is not subject to
     /// watcher-gating, since it exposes no alert content.
     ///
+    /// Dangling IDs (alerts whose storage entry has expired or been removed)
+    /// are filtered out, so every returned ID corresponds to a live alert.
+    ///
+    /// Returns an empty vec if `owner` has no registered alerts.
+    #[must_use]
+    pub fn get_alert_ids_by_owner(env: Env, owner: Address) -> Vec<u64> {
+        let ids = Self::owner_index(&env, &owner);
+        ids.into_iter()
+            .filter(|id| {
+                env.storage()
+                    .persistent()
+                    .has(&DataKey::Alert(*id))
+            })
+            .collect()
     /// Returns an empty vec if `owner` has no live registered alerts.
     #[must_use]
     pub fn get_alert_ids_by_owner(env: Env, owner: Address) -> Vec<u64> {
@@ -2412,6 +2432,18 @@ impl AlertRegistry {
         Ok(Self::configs_paginated(&env, &ids, offset, limit))
     }
 
+    /// Get a page of **active** alert configs watching a target contract (offset + limit).
+    ///
+    /// Equivalent to [`AlertRegistry::get_contract_alerts_paginated`] but filters out
+    /// any entries where `active == false`. Returns an empty vec if no active alerts
+    /// watch `target_contract`.
+    ///
+    /// If a `WatcherRegistry` is configured, `querier` must be a registered
+    /// watcher or the call returns [`ContractError::NotAWatcher`].
+    /// # Errors
+    /// Returns [`ContractError::NotAWatcher`] if a watcher registry is configured
+    /// and `querier` is not a registered watcher.
+    pub fn get_active_contract_alerts_paginated(
     /// Get a page of **active** alert configs for a target contract.
     ///
     /// The bounded, paginated replacement for
@@ -2872,6 +2904,9 @@ impl AlertRegistry {
     /// removals and deactivations. If you only need the number of live
     /// (non-removed) alerts regardless of the `active` flag, use
     /// [`AlertRegistry::get_non_removed_alert_count`], which is an O(1) lookup.
+    #[deprecated(
+        since = "0.3.0",
+        note = "This function scans the owner's index; use per-owner counters instead"
     ///
     /// **Deprecated since 0.2.0, removal in 0.4.0:** the scan over the owner
     /// index grows with the number of alerts the owner has ever registered.
@@ -3665,6 +3700,29 @@ impl AlertRegistry {
         offset: u32,
         limit: u32,
     ) -> Vec<AlertConfig> {
+        let mut out: Vec<AlertConfig> = vec![env];
+        let count = ids.len();
+        let first = offset.min(count);
+        let last = offset
+            .saturating_add(limit.min(MAX_PAGE_SIZE))
+            .min(count);
+        for i in first..last {
+            let id = ids.get(i).unwrap();
+            if let Some(cfg) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AlertConfig>(&DataKey::Alert(id))
+            {
+                if cfg.active {
+                    out.push_back(cfg);
+                }
+            }
+        }
+        out
+    }
+
+    /// Like [`AlertRegistry::configs_paginated`] but only includes entries where `active == true`.
+    fn active_configs_paginated(env: &Env, ids: &Vec<u64>, offset: u32, limit: u32) -> Vec<AlertConfig> {
         let mut out: Vec<AlertConfig> = vec![env];
         let count = ids.len();
         let first = offset.min(count);
