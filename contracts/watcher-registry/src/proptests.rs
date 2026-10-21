@@ -3,6 +3,7 @@
 extern crate std;
 
 use std::collections::BTreeSet;
+use std::vec::Vec;
 
 use crate::{WatcherRegistry, WatcherRegistryClient, ContractError};
 use proptest::prelude::*;
@@ -70,7 +71,7 @@ proptest! {
         }
 
         // Admin set should never be empty after initialization
-        let admins = client.get_admins().unwrap();
+        let admins = client.get_admins();
         prop_assert!(!admins.is_empty());
     }
 
@@ -104,7 +105,7 @@ proptest! {
         let watchers = client.get_watchers();
 
         // Count should match actual watcher list length
-        prop_assert_eq!(count as usize, watchers.len());
+        prop_assert_eq!(count, watchers.len());
     }
 
     #[test]
@@ -121,9 +122,9 @@ proptest! {
         }
 
         let watchers = client.get_watchers();
-        let unique: BTreeSet<_> = watchers.iter().cloned().collect();
+        let unique: BTreeSet<_> = watchers.iter().collect();
 
         // No duplicates should exist
-        prop_assert_eq!(watchers.len(), unique.len());
+        prop_assert_eq!(watchers.len() as usize, unique.len());
     }
 }

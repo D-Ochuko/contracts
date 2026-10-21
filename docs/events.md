@@ -241,7 +241,11 @@ Emitted when dangling IDs of expired alerts are removed from an owner's index, b
 |---|---|
 | Topic 0 | `Symbol("alert")` |
 | Topic 1 | `Symbol("pruned")` |
-| Data | `(owner: Address, count: u32)` |
+| Data | `(owner: Address, count: u32, ids: Vec<u64>)` |
+
+`ids` lists the pruned alert IDs, at most `MAX_PRUNE_PER_CALL` (50) per pass.
+
+**Expiry vs. removal.** `alert.remove` means an owner or admin removed the alert, and a `RemovedAlert` tombstone is written for sync clients. `alert.pruned` means the alert's record already expired from storage on its own; no tombstone exists, so indexers and sync clients must treat every ID in `ids` as gone and purge it locally.
 
 **Status:** ✅ implemented (`prune_expired_alerts`)
 
@@ -447,16 +451,40 @@ The current admin is unchanged.
 
 ---
 
+### `admin.guardian`
+
+Emitted when the guardian role is set or cleared via `set_guardian`. A `None`
+guardian means the role is unassigned.
+
+| Field | Value |
+|---|---|
+| Topic 0 | `Symbol("admin")` |
+| Topic 1 | `Symbol("guardian")` |
+| Data | `(admin: Address, guardian: Option<Address>)` |
+
+> The guardian is a pause-only role: it may call `pause` but never `unpause`,
+> and cannot upgrade the contract or change limits. Assign it to on-call
+> operators or monitoring bots that need to trip the circuit-breaker without
+> holding full admin authority.
+
+**Status:** ✅ implemented (`set_guardian`)
+
+---
+
 ### `admin.pause`
 
-Emitted when an admin pauses the registry with `pause`. Mutating calls are
-rejected until `admin.unpause` is emitted.
+Emitted when an admin — or the guardian — pauses the registry with `pause`.
+Mutating calls are rejected until `admin.unpause` is emitted.
 
 | Field | Value |
 |---|---|
 | Topic 0 | `Symbol("admin")` |
 | Topic 1 | `Symbol("pause")` |
 | Data | `(admin: Address,)` |
+
+> The `admin` field carries the caller, which may be either the admin or the
+> guardian (see [`admin.guardian`](#adminguardian)). Only the admin can
+> `unpause`.
 
 **Status:** ✅ implemented (`pause`)
 

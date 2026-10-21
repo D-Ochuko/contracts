@@ -193,11 +193,6 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Check events documentation
         run: bash scripts/check-events-doc.sh
-
-  # Issue #103, #282 — Code coverage reporting on pinned toolchain
-      - uses: actions/checkout@v7
-      - name: Check events documentation
-        run: bash scripts/check-events-doc.sh
       - name: Check storage documentation
         run: python3 scripts/check_storage_doc.py
 
@@ -207,8 +202,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: actions/checkout@v7
-
       - name: Resolve pinned toolchain
         id: rust
         run: |
@@ -243,6 +236,7 @@ jobs:
       - name: Shellcheck
         run: shellcheck scripts/*.sh
 
+  # Issue #105 — Dependency vulnerability scanning
   # Issue #105 — Dependency vulnerability scanning.
   audit:
     runs-on: ubuntu-latest
@@ -264,6 +258,17 @@ jobs:
 
       - name: Cargo audit
         run: cargo audit
+
+  # Issue #350 — Lint workflow files
+  actionlint:
+    name: Actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Run actionlint
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color
 
   # Issue #102 — PR-time dependency diffing and review
   dependency-review:

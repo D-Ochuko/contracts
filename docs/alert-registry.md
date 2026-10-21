@@ -21,6 +21,8 @@ Contract that stores alert configurations on-chain, keyed by contract address.
 | `active` | `bool` | Whether the alert is active |
 | `pending_webhook_hash` | `Option<BytesN<32>>` | Pending webhook hash proposed via `propose_webhook`, not yet confirmed. `None` when no rotation is in progress. |
 
+> **Expiry:** an alert may also carry an optional expiry ledger, stored separately from `AlertConfig` (see [`get_alert_expiry`](#get_alert_expiry)). Once the current ledger passes it, the alert is treated as inactive by the active getters and sync results even though its stored `active` flag is still `true`.
+
 ### `AlertInput`
 
 Input record for [`batch_register_alert`](#batch_register_alert). Mirrors the arguments of `register_alert`.
@@ -32,6 +34,7 @@ Input record for [`batch_register_alert`](#batch_register_alert). Mirrors the ar
 | `label` | `String` | Human-readable name for the alert |
 | `webhook_hash` | `BytesN<32>` | SHA-256 digest of the destination webhook URL |
 | `rules` | `Vec<String>` | Serialized rule descriptors |
+| `active_until_ledger` | `Option<u32>` | Optional ledger sequence after which the alert is treated as inactive. `None` means no expiry. |
 
 ---
 
@@ -138,14 +141,47 @@ Registers a new alert configuration for a target contract address.
 | `label` | `String` | Human-readable label |
 | `webhook_hash` | `BytesN<32>` | SHA-256 digest of the webhook URL |
 | `rules` | `Vec<String>` | Rule descriptors |
+| `active_until_ledger` | `Option<u32>` | Optional ledger sequence after which the alert is treated as inactive. `None` means no expiry. |
 
 **Returns:** `u64` — the new config ID
+
+**Expiry:** when `active_until_ledger` is `Some(ledger)`, the alert is treated as inactive by the active getters and sync results once the current ledger sequence is greater than `ledger`. The stored `active` flag is left untouched, so the record is not archived or removed — it simply stops being reported as active. This is distinct from storage TTL, which archives the record entirely.
 
 ---
 
 ### `update_alert`
 
-Updates the rules and active status of an existing alert. Only the original owner may call this.
+Updates the rules, active status, and optional expiry of an existing alert. Only the original owner may call this.
+
+**Parameters**
+
+| Name | Type | Description |
+|---|---|---|
+| `caller` | `Address` | Must be the alert owner |
+| `config_id` | `u64` | ID of the alert to update |
+| `rules` | `Vec<String>` | New rule descriptors |
+| `active` | `bool` | New active status |
+| `active_until_ledger` | `Option<u32>` | New expiry ledger, or `None` to clear any expiry |
+
+**Returns:** `Result<(), ContractError>`
+
+**Errors:** `AlertNotFound` if ID does not exist; `Unauthorized` if caller is not the owner; `AlertSuspended` if reactivating an admin-suspended alert; `Paused` while the contract is paused.
+
+---
+
+### `get_alert_expiry`
+
+Returns the optional expiry ledger stored for an alert, or `None` if the alert has no expiry (or does not exist).
+
+**Parameters**
+
+| Name | Type | Description |
+|---|---|---|
+| `config_id` | `u64` | Alert config ID |
+
+**Returns:** `Option<u32>` — the ledger sequence after which the alert is treated as inactive.
+
+**Expiry semantics:** an alert is considered expired once the current ledger sequence is greater than its `active_until_ledger`. Expired alerts are reported as inactive (`false`) by [`get_alert_active`](#get_alert_active), excluded from [`get_active_alerts_for_contract`](#get_active_alerts_for_contract), and omitted from the sync results of [`get_alerts_modified_since`](#get_alerts_modified_since) and [`get_alerts_modified_since_ledger`](#get_alerts_modified_since_ledger). The underlying record and its `active` flag are not modified, so clearing the expiry (via `update_alert` with `active_until_ledger = None`) makes the alert active again if its stored flag is `true`.
 
 ### `set_alert_active`
 
@@ -215,6 +251,29 @@ Transfers admin authority to a new address. Requires current admin auth.
 ### `get_admin`
 
 Returns the current admin address.
+
+---
+
+### `set_guardian` / `get_guardian`
+
+`set_guardian(admin, guardian)` designates an optional **pause-only guardian** — an on-call operator or monitoring bot that can trip the circuit-breaker without holding the full admin key (which can also upgrade the contract and change limits). The guardian may call `pause` but can never call `unpause`. Admin only.
+
+**Requires auth:** `admin`
+
+**Parameters**
+
+| Name | Type | Description |
+|---|---|---|
+| `admin` | `Address` | Current admin address |
+| `guardian` | `Address` | Address to designate as the pause-only guardian |
+
+**Returns:** nothing
+
+**Errors:** `NotInitialized` if the contract has not been initialized; `Unauthorized` if caller is not the admin; `Paused` while the contract is paused.
+
+**Events:** Emits `(Symbol("alert"), Symbol("guardian"))` with data `(admin: Address, guardian: Address)`.
+
+`get_guardian() -> Option<Address>` returns the configured guardian, or `None` if none has been set.
 
 ### `get_configuration`
 
@@ -366,9 +425,23 @@ Removes IDs from `owner`'s index whose alert record no longer exists (expired in
 
 Each call examines at most `MAX_PRUNE_PER_CALL` (50) index entries, resuming from a stored `PruneCursor`, like `deactivate_all_alerts`. `get_prune_cursor(owner) -> Option<u32>` returns `Some(_)` while a scan is still in progress; call `prune_expired_alerts` again until it returns `None`.
 
-**Events:** Emits `(Symbol("alert"), Symbol("pruned"))` with data `(owner: Address, count: u32)` when at least one ID was removed.
+**Events:** Emits `(Symbol("alert"), Symbol("pruned"))` with data `(owner: Address, count: u32, ids: Vec<u64>)` when at least one ID was removed.
 
-**Limitation:** the expired alert's `ContractIndex` entry cannot be removed, because the target contract was only recorded in the expired record. It does not count against any limit: per-contract counts only count IDs whose record exists.
+**Contract side:** each alert's target is also stored under `AlertTarget(id)`, so pruning repairs the target's `ContractIndex` and `ContractLiveCount` too. Expired alerts therefore release their per-contract quota.
+
+---
+
+### `prune_contract_index`
+
+Drops IDs from `target`'s contract index whose alert record no longer exists (expired) and recounts `ContractLiveCount`. Callable by anyone with no auth. Scans the whole contract index.
+
+**Parameters**
+
+| Name | Type | Description |
+|---|---|---|
+| `target` | `Address` | Contract whose index is cleaned up |
+
+**Returns:** `u32` — the number of dangling IDs removed
 
 ---
 
@@ -751,12 +824,22 @@ Enables incremental sync for watcher nodes by passing the ledger timestamp of th
 matching `updated_at >= since` among the IDs in `[offset, offset + limit)`.
 Continue paging by increasing `offset` by `limit` until it reaches
 `get_alert_count()`; a short or empty page does not indicate that later IDs
-cannot match. A tombstone has `active == false` and identifies an alert that
-must be removed from the watcher's local state.
+cannot match. A tombstone has `removed == true` (and `active == false`) and
+identifies an alert that must be purged from the watcher's local state. An
+entry with `active == false` and `removed == false` is a paused alert: keep it
+and mark it inactive. Always branch on `removed`, never on `active` alone.
 All paginated alert queries cap `limit` at `MAX_PAGE_SIZE` (100 IDs), so
 passing a larger value is safe and does not create an unbounded RPC simulation.
 
 **Returns:** `Vec<(u64, AlertConfig)>` — live alerts matching `updated_at >= since`.
+
+---
+
+### `get_min_sync_ledger`
+
+Returns the oldest ledger sequence from which incremental sync is guaranteed to include every removal tombstone (`current_ledger - TOMBSTONE_TTL`, saturating at 0). If a client's `since_ledger` cursor is below this value it must fall back to a full resync.
+
+**Returns:** `u32`
 
 ---
 
@@ -858,7 +941,11 @@ Convenience boolean getter returning `true` if watcher-gating is currently activ
 
 ## Pause
 
-`pause(admin)` freezes the registry during an incident: **every state-mutating entry point returns `ContractError::Paused`** until `unpause(admin)`. Reads keep working. The only exemptions are deliberate (#203):
+`pause(caller)` freezes the registry during an incident: **every state-mutating entry point returns `ContractError::Paused`** until `unpause(admin)`. Reads keep working.
+
+**Authorization:** `pause` may be called by the admin **or** by the configured guardian (see [`set_guardian`](#set_guardian--get_guardian)). `unpause` may only be called by the admin — the guardian can trip the circuit-breaker but never release it. Calling `pause` when already paused returns `ContractError::Paused`.
+
+The only exemptions are deliberate (#203):
 
 | Exempt entry point | Why |
 |---|---|
@@ -911,6 +998,8 @@ This includes admin moderation (`deactivate_alert_by_admin`, `unlock_alert_by_ad
 - The optional admin address is stored in **instance storage** under `ADMIN`.
 - The optional per-owner alert limit is stored in **instance storage** under `LIMIT`.
 - The optional `WatcherRegistry` contract address is stored in **instance storage** under `WATCHREG`.
+- The optional pause-only guardian address is stored in **instance storage** under `GUARDIAN`.
+- Optional alert expiry ledgers are stored in **persistent storage** under a dedicated `DataKey::AlertExpiry(id)` key, so `AlertConfig` does not need to be re-encoded when the feature is unused.
 
 ---
 

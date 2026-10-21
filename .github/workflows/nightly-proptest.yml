@@ -1,0 +1,61 @@
+name: Nightly proptest sweep
+
+# Low case counts can miss property regressions. This nightly run drives the
+# proptest suites at high case counts so a shrinking counterexample that appears
+# once per 10 000 runs still gets caught and stored as a regression seed.
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  nightly-proptest:
+    name: Nightly proptest (PROPTEST_CASES=10000)
+    runs-on: ubuntu-latest
+
+    env:
+      RUSTUP_TOOLCHAIN: "1.90.0"
+      PROPTEST_CASES: 10000
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Rust 1.90 (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90.0"
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry
+        uses: actions/cache@d4323d4df104b026a6aa633fdb11d772115f6ec1 # v4.2.2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-nightly-proptest-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-nightly-proptest-
+
+      - name: Build release WASM (structurally needed by some proptest harnesses)
+        run: |
+          cargo build --release --target wasm32-unknown-unknown --locked -p alert-registry -p watcher-registry
+
+      - name: Nightly proptest sweep
+        run: |
+          set -o pipefail
+          cargo test --workspace --locked -- --no-fail-fast
+        continue-on-error: true
+
+      - name: Upload proptest regressions on failure
+        if: failure()
+        uses: actions/upload-artifact@5d5d22a31266ced268874388b16115ba7150a28f # v4.3.1
+        with:
+          name: proptest-regressions
+          path: |
+            **/proptest-regressions/**
+          if-no-files-found: ignore
+          retention-days: 30

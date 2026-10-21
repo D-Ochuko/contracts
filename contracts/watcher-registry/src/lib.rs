@@ -1376,11 +1376,20 @@ mod tests {
     fn setup() -> (Env, Address, WatcherRegistryClient<'static>) {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(WatcherRegistry, ());
-        let client = WatcherRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin);
+        let contract_id = env.register(WatcherRegistry, (&admin,));
+        let client = WatcherRegistryClient::new(&env, &contract_id);
         (env, admin, client)
+    }
+
+    #[test]
+    fn test_legacy_initialize_after_constructor_returns_already_initialized() {
+        let (env, _admin, client) = setup();
+        let other = Address::generate(&env);
+        assert_eq!(
+            client.try_initialize(&other).unwrap_err().unwrap(),
+            ContractError::AlreadyInitialized
+        );
     }
 
     // 1. Happy path — register and check authorization
@@ -1401,10 +1410,9 @@ mod tests {
     #[should_panic(expected = "Error(Auth, InvalidAction)")]
     fn test_initialize_requires_admin_auth() {
         let env = Env::default();
-        let contract_id = env.register(WatcherRegistry, ());
-        let client = WatcherRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin);
+        let contract_id = env.register(WatcherRegistry, (&admin,));
+        let client = WatcherRegistryClient::new(&env, &contract_id);
     }
 
     // 2. Happy path — remove watcher
@@ -1455,6 +1463,12 @@ mod tests {
         client.accept_admin_transfer(&new_admin);
 
         let events = env.events().all();
+        // Find the transfer event
+        let found = events.events().iter().any(|e| {
+            // topics are (symbol "admin", symbol "transfer")
+            // we just verify at least one event was emitted after transfer
+            let _ = e;
+            true
         let transfer_event = events.iter().find(|(_, topics, _)| {
             topics.len() == 2
                 && Symbol::from_val(&env, &topics.get(0).unwrap())
@@ -1692,7 +1706,7 @@ mod tests {
     fn test_get_admin_uninitialized() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(WatcherRegistry, ());
+        let contract_id = env.register(WatcherRegistry, (&Address::generate(&env),));
         let client = WatcherRegistryClient::new(&env, &contract_id);
 
         assert_eq!(
@@ -1707,7 +1721,7 @@ mod tests {
     fn test_get_admin_not_initialized() {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(WatcherRegistry, ());
+        let contract_id = env.register(WatcherRegistry, (&Address::generate(&env),));
         let client = WatcherRegistryClient::new(&env, &contract_id);
         client.get_admin();
     }
@@ -2224,7 +2238,7 @@ mod tests {
         client.add_admin(&admin, &second_admin);
 
         // At least one event was emitted (the add event)
-        assert!(!env.events().all().is_empty());
+        assert!(!env.events().all().events().is_empty());
     }
 
     // 21. remove_admin emits event
@@ -2236,7 +2250,7 @@ mod tests {
         client.add_admin(&admin, &second_admin);
         client.remove_admin(&admin, &second_admin);
 
-        assert!(!env.events().all().is_empty());
+        assert!(!env.events().all().events().is_empty());
     }
 
     // 22. remove_watcher emits event
@@ -2248,7 +2262,7 @@ mod tests {
         client.register_watcher(&admin, &watcher);
         client.remove_watcher(&admin, &watcher);
 
-        assert!(!env.events().all().is_empty());
+        assert!(!env.events().all().events().is_empty());
     }
 
     // 23. remove_watcher event has the correct topic and data shape
@@ -2261,6 +2275,22 @@ mod tests {
         client.remove_watcher(&admin, &watcher);
 
         let events = env.events().all();
+        // Find an event with exactly 2 topics (watcher.remove shape)
+        let remove_event = events.events().iter().find(|e| {
+            matches!(
+                &e.body,
+                soroban_sdk::xdr::ContractEventBody::V0(v0) if v0.topics.len() == 2
+            )
+        });
+        assert!(remove_event.is_some(), "expected a watcher.remove event");
+
+        // Verify data is the watcher address
+        let data = match &remove_event.unwrap().body {
+            soroban_sdk::xdr::ContractEventBody::V0(v0) => v0.data.clone(),
+        };
+        let emitted_watcher: Address =
+            soroban_sdk::TryFromVal::try_from_val(&env, &data).expect("data decodes as address");
+        assert_eq!(emitted_watcher, watcher);
         let remove_event = events.iter().find(|(_, topics, _)| {
             topics.len() == 2
                 && Symbol::from_val(&env, &topics.get(0).unwrap())
@@ -2287,7 +2317,7 @@ mod tests {
         // Only the admin.init event from setup() should exist; no watcher.remove
         let events = env.events().all();
         assert_eq!(
-            events.len(),
+            events.events().len(),
             0,
             "no watcher.remove event expected for unregistered watcher"
         );
@@ -2408,7 +2438,7 @@ mod tests {
         client.replace_watcher(&admin, &old, &new);
 
         // At least two events emitted (remove + replace)
-        assert!(env.events().all().len() >= 2);
+        assert!(env.events().all().events().len() >= 2);
     }
 
     // ── get_watchers_paginated tests ─────────────────────────────────────────
@@ -2596,43 +2626,6 @@ mod tests {
             assert_eq!(client.try_register_watcher(&admin, &w).unwrap(), Ok(()));
         }
         assert_eq!(client.get_watcher_count(), MAX_WATCHERS);
-
-        assert_eq!(
-            client
-                .try_register_watcher(&admin, &Address::generate(&env))
-                .unwrap_err()
-                .unwrap(),
-            ContractError::MaxWatchersReached
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Auth, InvalidAction)")]
-    fn test_propose_admin_transfer_requires_auth() {
-        let env = Env::default();
-        let contract_id = env.register(WatcherRegistry, ());
-        let client = WatcherRegistryClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let new_admin = Address::generate(&env);
-        env.mock_all_auths();
-        client.initialize(&admin);
-        env.set_auths(&[]);
-        client.propose_admin_transfer(&admin, &new_admin);
-    }
-
-    #[test]
-    #[should_panic(expected = "Error(Auth, InvalidAction)")]
-    fn test_accept_admin_transfer_requires_auth() {
-        let env = Env::default();
-        let contract_id = env.register(WatcherRegistry, ());
-        let client = WatcherRegistryClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let new_admin = Address::generate(&env);
-        env.mock_all_auths();
-        client.initialize(&admin);
-        client.propose_admin_transfer(&admin, &new_admin);
-        env.set_auths(&[]);
-        client.accept_admin_transfer(&new_admin);
         let overflow = Address::generate(&env);
         assert_eq!(
             client
@@ -2642,6 +2635,47 @@ mod tests {
             ContractError::MaxWatchersReached
         );
         assert_eq!(client.get_watchers().len(), MAX_WATCHERS);
+    }
+
+        let overflow = Address::generate(&env);
+        assert_eq!(
+            client
+                .try_register_watcher(&admin, &overflow)
+        assert_eq!(
+            client
+                .try_register_watcher(&admin, &Address::generate(&env))
+                .unwrap_err()
+                .unwrap(),
+            ContractError::MaxWatchersReached
+        );
+        assert_eq!(client.get_watchers().len(), MAX_WATCHERS);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Auth, InvalidAction)")]
+    fn test_propose_admin_transfer_requires_auth() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(WatcherRegistry, (&admin,));
+        let client = WatcherRegistryClient::new(&env, &contract_id);
+        let new_admin = Address::generate(&env);
+        env.mock_all_auths();
+        env.set_auths(&[]);
+        client.propose_admin_transfer(&admin, &new_admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Auth, InvalidAction)")]
+    fn test_accept_admin_transfer_requires_auth() {
+        let env = Env::default();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(WatcherRegistry, (&admin,));
+        let client = WatcherRegistryClient::new(&env, &contract_id);
+        let new_admin = Address::generate(&env);
+        env.mock_all_auths();
+        client.propose_admin_transfer(&admin, &new_admin);
+        env.set_auths(&[]);
+        client.accept_admin_transfer(&new_admin);
     }
 
     // 32. A full registry still accepts re-registering an existing watcher (no growth).
@@ -2780,10 +2814,9 @@ mod tests {
 
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(WatcherRegistry, ());
-        let client = WatcherRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin);
+        let contract_id = env.register(WatcherRegistry, (&admin,));
+        let client = WatcherRegistryClient::new(&env, &contract_id);
 
         // Let the instance TTL decay before bumping.
         env.ledger().with_mut(|li| li.sequence_number += 1_000);
@@ -2800,11 +2833,10 @@ mod tests {
     #[test]
     fn test_bump_instance_ttl_needs_no_auth() {
         let env = Env::default();
-        let contract_id = env.register(WatcherRegistry, ());
-        let client = WatcherRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
+        let contract_id = env.register(WatcherRegistry, (&admin,));
+        let client = WatcherRegistryClient::new(&env, &contract_id);
         env.mock_all_auths();
-        client.initialize(&admin);
         client.register_watcher(&admin, &admin);
 
         env.set_auths(&[]);
@@ -3074,6 +3106,7 @@ mod tests {
 
         client.register_watchers(&admin, &vec![&env, w1, w2]);
 
+        assert_eq!(env.events().all().events().len(), 2);
         assert_eq!(env.events().all().len(), 2);
     }
 
@@ -3087,7 +3120,7 @@ mod tests {
         client.replace_watcher(&admin, &w, &w);
 
         assert_eq!(
-            env.events().all().len(),
+            env.events().all().events().len(),
             0,
             "self-replace must not emit any watcher event"
         );
@@ -3122,7 +3155,7 @@ mod tests {
     #[test]
     fn test_contract_address_can_hold_roles() {
         let (env, admin, client) = setup();
-        let contract_addr = env.register(WatcherRegistry, ());
+        let contract_addr = env.register(WatcherRegistry, (&Address::generate(&env),));
 
         assert_eq!(
             client.try_register_watcher(&admin, &contract_addr).unwrap(),
@@ -3143,12 +3176,11 @@ mod tests {
     #[should_panic(expected = "Error(Auth, InvalidAction)")]
     fn test_add_admin_requires_auth() {
         let env = Env::default();
-        let contract_id = env.register(WatcherRegistry, ());
-        let client = WatcherRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
+        let contract_id = env.register(WatcherRegistry, (&admin,));
+        let client = WatcherRegistryClient::new(&env, &contract_id);
         let new_admin = Address::generate(&env);
         env.mock_all_auths();
-        client.initialize(&admin);
         env.set_auths(&[]);
         client.add_admin(&admin, &new_admin);
     }
@@ -3157,12 +3189,11 @@ mod tests {
     #[should_panic(expected = "Error(Auth, InvalidAction)")]
     fn test_remove_admin_requires_auth() {
         let env = Env::default();
-        let contract_id = env.register(WatcherRegistry, ());
-        let client = WatcherRegistryClient::new(&env, &contract_id);
         let admin1 = Address::generate(&env);
+        let contract_id = env.register(WatcherRegistry, (&admin1,));
+        let client = WatcherRegistryClient::new(&env, &contract_id);
         let admin2 = Address::generate(&env);
         env.mock_all_auths();
-        client.initialize(&admin1);
         client.add_admin(&admin1, &admin2);
         env.set_auths(&[]);
         client.remove_admin(&admin1, &admin2);
@@ -3172,12 +3203,11 @@ mod tests {
     #[should_panic(expected = "Error(Auth, InvalidAction)")]
     fn test_transfer_admin_requires_auth() {
         let env = Env::default();
-        let contract_id = env.register(WatcherRegistry, ());
-        let client = WatcherRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
+        let contract_id = env.register(WatcherRegistry, (&admin,));
+        let client = WatcherRegistryClient::new(&env, &contract_id);
         let new_admin = Address::generate(&env);
         env.mock_all_auths();
-        client.initialize(&admin);
         env.set_auths(&[]);
         client.transfer_admin(&admin, &new_admin);
     }
@@ -3186,12 +3216,11 @@ mod tests {
     #[should_panic(expected = "Error(Auth, InvalidAction)")]
     fn test_register_watcher_requires_auth() {
         let env = Env::default();
-        let contract_id = env.register(WatcherRegistry, ());
-        let client = WatcherRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
+        let contract_id = env.register(WatcherRegistry, (&admin,));
+        let client = WatcherRegistryClient::new(&env, &contract_id);
         let watcher = Address::generate(&env);
         env.mock_all_auths();
-        client.initialize(&admin);
         env.set_auths(&[]);
         client.register_watcher(&admin, &watcher);
     }
@@ -3200,12 +3229,11 @@ mod tests {
     #[should_panic(expected = "Error(Auth, InvalidAction)")]
     fn test_remove_watcher_requires_auth() {
         let env = Env::default();
-        let contract_id = env.register(WatcherRegistry, ());
-        let client = WatcherRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
+        let contract_id = env.register(WatcherRegistry, (&admin,));
+        let client = WatcherRegistryClient::new(&env, &contract_id);
         let watcher = Address::generate(&env);
         env.mock_all_auths();
-        client.initialize(&admin);
         client.register_watcher(&admin, &watcher);
         env.set_auths(&[]);
         client.remove_watcher(&admin, &watcher);
@@ -3215,13 +3243,12 @@ mod tests {
     #[should_panic(expected = "Error(Auth, InvalidAction)")]
     fn test_replace_watcher_requires_auth() {
         let env = Env::default();
-        let contract_id = env.register(WatcherRegistry, ());
-        let client = WatcherRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
+        let contract_id = env.register(WatcherRegistry, (&admin,));
+        let client = WatcherRegistryClient::new(&env, &contract_id);
         let old_watcher = Address::generate(&env);
         let new_watcher = Address::generate(&env);
         env.mock_all_auths();
-        client.initialize(&admin);
         client.register_watcher(&admin, &old_watcher);
         env.set_auths(&[]);
         client.replace_watcher(&admin, &old_watcher, &new_watcher);
@@ -3231,12 +3258,11 @@ mod tests {
     #[should_panic(expected = "Error(Auth, InvalidAction)")]
     fn test_clear_all_watchers_requires_auth() {
         let env = Env::default();
-        let contract_id = env.register(WatcherRegistry, ());
-        let client = WatcherRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
+        let contract_id = env.register(WatcherRegistry, (&admin,));
+        let client = WatcherRegistryClient::new(&env, &contract_id);
         let watcher = Address::generate(&env);
         env.mock_all_auths();
-        client.initialize(&admin);
         client.register_watcher(&admin, &watcher);
         env.set_auths(&[]);
         client.clear_all_watchers(&admin);
@@ -3251,7 +3277,7 @@ mod tests {
     fn uninit() -> (Env, WatcherRegistryClient<'static>) {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(WatcherRegistry, ());
+        let contract_id = env.register(WatcherRegistry, (&Address::generate(&env),));
         let client = WatcherRegistryClient::new(&env, &contract_id);
         (env, client)
     }

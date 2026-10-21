@@ -72,6 +72,9 @@ confirm_mainnet() {
     exit 1
   fi
 }
+# Build only the target crate with -p and --locked via common build_contract helper
+WASM="$(wasm_path "$CONTRACT")"
+build_contract "$CONTRACT"
 
 echo "==> Fetching current deployed WASM hash..."
 CURRENT_WASM_HASH=$(stellar contract info \
