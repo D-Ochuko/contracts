@@ -693,6 +693,7 @@ impl AlertRegistry {
         admin.require_auth();
         Self::assert_admin(&env, &admin)?;
 
+        env.deployer().update_current_contract_wasm(new_wasm_hash.clone());
         env.deployer()
             .update_current_contract_wasm(new_wasm_hash.clone());
         env.events().publish(
@@ -2897,13 +2898,13 @@ impl AlertRegistry {
         Self::owner_live_count(&env, &owner)
     }
 
-    /// Get the number of active (non-removed, unexpired) alerts targeting
+    /// Get the number of live (non-removed) alerts targeting
     /// `target_contract`, aggregated across every contributing owner.
     ///
-    /// Keyed by target contract rather than owner. Unlike
-    /// [`AlertRegistry::get_non_removed_alert_count`], this filters by the
-    /// `active` flag and excludes deactivated alerts.
+    /// Keyed by target contract rather than owner. Deactivated alerts still
+    /// count as live until they are removed.
     pub fn get_active_contract_alert_count(env: Env, target_contract: Address) -> u32 {
+        Self::contract_live_count(&env, &target_contract)
         let ids = Self::contract_index(&env, &target_contract);
         let mut count: u32 = 0;
         for id in ids.iter() {
@@ -4203,6 +4204,30 @@ mod tests {
 
         assert_eq!(client.get_active_contract_alert_count(&target_a), 1u32);
         assert_eq!(client.get_active_contract_alert_count(&target_b), 1u32);
+    }
+
+    #[test]
+    fn test_contract_alert_count_after_deactivate_and_remove() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        let owner = Address::generate(&env);
+        let target = Address::generate(&env);
+        let id = client.register_alert(
+            &owner,
+            &target,
+            &str(&env, "Alert1"),
+            &hash64(&env),
+            &vec![&env, str(&env, "rule:transfer")],
+        );
+        assert_eq!(client.get_active_contract_alert_count(&target), 1u32);
+
+        // Deactivated alerts remain live until removed.
+        client.set_alert_active(&owner, &id, &false);
+        assert_eq!(client.get_active_contract_alert_count(&target), 1u32);
+
+        client.remove_alert(&owner, &id);
+        assert_eq!(client.get_active_contract_alert_count(&target), 0u32);
     }
 
     #[test]
@@ -5877,6 +5902,19 @@ mod tests {
     // #195 — initialize must require a valid signature from the admin address so
     // that no one can front-run the initialization window after deployment and
     // claim the admin role without owning the corresponding key.
+    #[test]
+    fn test_initialize_after_constructor_returns_already_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(AlertRegistry, (admin.clone(),));
+        let client = AlertRegistryClient::new(&env, &contract_id);
+        assert_eq!(
+            client.try_initialize(&admin).unwrap_err().unwrap(),
+            ContractError::AlreadyInitialized
+        );
+    }
+
     #[test]
     #[should_panic(expected = "Error(Auth, InvalidAction)")]
     fn test_initialize_requires_auth() {
