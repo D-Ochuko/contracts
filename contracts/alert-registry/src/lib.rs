@@ -2615,27 +2615,8 @@ impl AlertRegistry {
                     if cfg.active {
                         cfg.active = false;
                         cfg.updated_at = env.ledger().timestamp();
-                        Self::persist_alert(&env, id, &cfg);
                         cfg.updated_ledger = env.ledger().sequence();
-                        env.storage().persistent().set(&DataKey::Alert(id), &cfg);
-                        env.storage().persistent().extend_ttl(
-                            &DataKey::Alert(id),
-                            DEFAULT_TTL,
-                            DEFAULT_TTL,
-                        );
-                        env.storage()
-                            .persistent()
-                            .set(&DataKey::AlertActive(id), &false);
-                        env.storage().persistent().extend_ttl(
-                            &DataKey::AlertActive(id),
-                            DEFAULT_TTL,
-                            DEFAULT_TTL,
-                        );
-                        env.storage().persistent().extend_ttl(
-                            &DataKey::ContractIndex(cfg.target_contract.clone()),
-                            DEFAULT_TTL,
-                            DEFAULT_TTL,
-                        );
+                        Self::persist_alert(&env, id, &cfg);
                         count += 1;
                     }
                 }
@@ -6420,6 +6401,33 @@ mod tests {
         assert!(
             scan_cost < 15_000_000,
             "get_alerts_modified_since cost {scan_cost} exceeded upper bound 15M instructions"
+        );
+    }
+
+    /// Bulk deactivation of 50 alerts writes each alert once and stays within
+    /// a CPU budget ceiling.
+    #[test]
+    fn test_deactivate_all_alerts_50_budget() {
+        const N: u32 = 50;
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let target = Address::generate(&env);
+        let hash = hash64(&env);
+        let rules = vec![&env, str(&env, "rule:transfer")];
+        for _ in 0..N {
+            let label = str(&env, "Alert");
+            client.register_alert(&owner, &target, &label, &hash, &rules);
+        }
+
+        let cpu_before = env.cost_estimate().budget().cpu_instruction_cost();
+        let deactivated = client.deactivate_all_alerts(&owner);
+        let cpu_after = env.cost_estimate().budget().cpu_instruction_cost();
+        let cost = cpu_after.saturating_sub(cpu_before);
+
+        assert_eq!(deactivated, N);
+        assert!(
+            cost < 100_000_000,
+            "deactivate_all_alerts cost {cost} exceeded upper bound 100M instructions"
         );
     }
 
