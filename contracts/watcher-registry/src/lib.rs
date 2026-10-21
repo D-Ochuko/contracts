@@ -1463,6 +1463,12 @@ mod tests {
         client.accept_admin_transfer(&new_admin);
 
         let events = env.events().all();
+        // Find the transfer event
+        let found = events.events().iter().any(|e| {
+            // topics are (symbol "admin", symbol "transfer")
+            // we just verify at least one event was emitted after transfer
+            let _ = e;
+            true
         let transfer_event = events.iter().find(|(_, topics, _)| {
             topics.len() == 2
                 && Symbol::from_val(&env, &topics.get(0).unwrap())
@@ -2232,7 +2238,7 @@ mod tests {
         client.add_admin(&admin, &second_admin);
 
         // At least one event was emitted (the add event)
-        assert!(!env.events().all().is_empty());
+        assert!(!env.events().all().events().is_empty());
     }
 
     // 21. remove_admin emits event
@@ -2244,7 +2250,7 @@ mod tests {
         client.add_admin(&admin, &second_admin);
         client.remove_admin(&admin, &second_admin);
 
-        assert!(!env.events().all().is_empty());
+        assert!(!env.events().all().events().is_empty());
     }
 
     // 22. remove_watcher emits event
@@ -2256,7 +2262,7 @@ mod tests {
         client.register_watcher(&admin, &watcher);
         client.remove_watcher(&admin, &watcher);
 
-        assert!(!env.events().all().is_empty());
+        assert!(!env.events().all().events().is_empty());
     }
 
     // 23. remove_watcher event has the correct topic and data shape
@@ -2269,6 +2275,22 @@ mod tests {
         client.remove_watcher(&admin, &watcher);
 
         let events = env.events().all();
+        // Find an event with exactly 2 topics (watcher.remove shape)
+        let remove_event = events.events().iter().find(|e| {
+            matches!(
+                &e.body,
+                soroban_sdk::xdr::ContractEventBody::V0(v0) if v0.topics.len() == 2
+            )
+        });
+        assert!(remove_event.is_some(), "expected a watcher.remove event");
+
+        // Verify data is the watcher address
+        let data = match &remove_event.unwrap().body {
+            soroban_sdk::xdr::ContractEventBody::V0(v0) => v0.data.clone(),
+        };
+        let emitted_watcher: Address =
+            soroban_sdk::TryFromVal::try_from_val(&env, &data).expect("data decodes as address");
+        assert_eq!(emitted_watcher, watcher);
         let remove_event = events.iter().find(|(_, topics, _)| {
             topics.len() == 2
                 && Symbol::from_val(&env, &topics.get(0).unwrap())
@@ -2295,7 +2317,7 @@ mod tests {
         // Only the admin.init event from setup() should exist; no watcher.remove
         let events = env.events().all();
         assert_eq!(
-            events.len(),
+            events.events().len(),
             0,
             "no watcher.remove event expected for unregistered watcher"
         );
@@ -2416,7 +2438,7 @@ mod tests {
         client.replace_watcher(&admin, &old, &new);
 
         // At least two events emitted (remove + replace)
-        assert!(env.events().all().len() >= 2);
+        assert!(env.events().all().events().len() >= 2);
     }
 
     // ── get_watchers_paginated tests ─────────────────────────────────────────
@@ -2615,6 +2637,10 @@ mod tests {
         assert_eq!(client.get_watchers().len(), MAX_WATCHERS);
     }
 
+        let overflow = Address::generate(&env);
+        assert_eq!(
+            client
+                .try_register_watcher(&admin, &overflow)
         assert_eq!(
             client
                 .try_register_watcher(&admin, &Address::generate(&env))
@@ -2622,6 +2648,7 @@ mod tests {
                 .unwrap(),
             ContractError::MaxWatchersReached
         );
+        assert_eq!(client.get_watchers().len(), MAX_WATCHERS);
     }
 
     #[test]
@@ -3079,6 +3106,7 @@ mod tests {
 
         client.register_watchers(&admin, &vec![&env, w1, w2]);
 
+        assert_eq!(env.events().all().events().len(), 2);
         assert_eq!(env.events().all().len(), 2);
     }
 
@@ -3092,7 +3120,7 @@ mod tests {
         client.replace_watcher(&admin, &w, &w);
 
         assert_eq!(
-            env.events().all().len(),
+            env.events().all().events().len(),
             0,
             "self-replace must not emit any watcher event"
         );

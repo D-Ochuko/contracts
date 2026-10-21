@@ -1,0 +1,73 @@
+name: Contract spec golden-file check
+
+# Catches silent contract-interface breakages. Renaming or removing a public
+# entrypoint breaks every generated binding without any Rust error; this check
+# verifies that the committed `contracts/*/spec.golden.json` still matches the
+# spec embedded in the built WASM, so a change must be reviewed in a PR.
+#
+# Trigger: PRs targeting main (so unreviewed diffs surface in review) and
+# pushes to main (so main stays pinned to the reviewed golden files).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  spec-golden:
+    name: Contract spec golden check
+    runs-on: ubuntu-latest
+
+    # The golden files must be regenerated with this exact stellar CLI version,
+    # because the JSON shape of `contract info interface --output json` is
+    # versioned alongside the CLI. Keep this pinned to the upstream CI constant.
+    env:
+      STELLAR_CLI_VERSION: "28.0.0"
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Resolve pinned toolchain
+        id: rust
+        run: |
+          channel=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' rust-toolchain.toml)
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry
+        uses: actions/cache@d4323d4df104b026a6aa633fdb11d772115f6ec1 # v4.2.2
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-spec-golden-${{ steps.rust.outputs.channel }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-spec-golden-${{ steps.rust.outputs.channel }}-
+
+      - name: Build release WASM
+        run: |
+          cargo build --release --target wasm32-unknown-unknown --locked -p alert-registry -p watcher-registry
+
+      - name: Install Stellar CLI
+        run: |
+          curl -sSfL "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin stellar
+          stellar --version
+
+      - name: Optimize WASM (matched by schema by stellar)
+        run: |
+          for crate in alert-registry watcher-registry; do
+            stellar contract optimize --wasm target/wasm32-unknown-unknown/release/${crate//-/_}.wasm
+          done
+
+      - name: Check contract spec against golden files
+        run: bash scripts/spec-golden.sh

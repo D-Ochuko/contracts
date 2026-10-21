@@ -313,6 +313,8 @@ fn test_upgrade_requires_initialized_admin() {
         client.try_upgrade(&caller, &wasm_hash).unwrap_err().unwrap(),
         ContractError::NotInitialized
     );
+}
+
 // ── Pause / circuit-breaker tests ────────────────────────────────────────
 
 #[test]
