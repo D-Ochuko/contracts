@@ -7,12 +7,13 @@ use soroban_sdk::{
     vec, Address, Env, FromVal, String, Symbol,
 };
 
-fn setup() -> (Env, AlertRegistryClient<'static>) {
+fn setup() -> (Env, Address, AlertRegistryClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(AlertRegistry, ());
+    let admin = Address::generate(&env);
+    let contract_id = env.register(AlertRegistry, (&admin,));
     let client = AlertRegistryClient::new(&env, &contract_id);
-    (env, client)
+    (env, admin, client)
 }
 
 fn hash64(env: &Env) -> soroban_sdk::BytesN<32> {
@@ -37,7 +38,7 @@ fn str(env: &Env, s: &str) -> String {
 /// and not silently ignored.
 #[test]
 fn test_regression_update_alert_discarding_rule_validation_errors() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -71,7 +72,7 @@ fn test_regression_update_alert_discarding_rule_validation_errors() {
 /// the active status lookup, the owner index, and the target contract index, and emits the remove event.
 #[test]
 fn test_regression_missing_remove_alert_body() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -114,7 +115,7 @@ fn test_regression_missing_remove_alert_body() {
 /// check is that the 32 digest bytes are stored and returned unchanged.
 #[test]
 fn test_regression_update_webhook_accepted_invalid_length_hashes() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -148,7 +149,7 @@ fn test_regression_update_webhook_accepted_invalid_length_hashes() {
 /// Ensures large offset/limit combinations saturate rather than overflowing with arithmetic panic.
 #[test]
 fn test_regression_configs_paginated_overflow_on_offset_plus_limit() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -177,11 +178,9 @@ fn test_regression_configs_paginated_overflow_on_offset_plus_limit() {
 /// Ensures `transfer_admin` emits `("admin", "transfer")` event with old and new admin addresses.
 #[test]
 fn test_regression_transfer_admin_emitted_no_event() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
+    let (env, admin, client) = setup();
     let new_admin = Address::generate(&env);
 
-    client.initialize(&admin);
 
     let events_before = env.events().all().len();
     assert_eq!(
@@ -207,12 +206,10 @@ fn test_regression_transfer_admin_emitted_no_event() {
 /// Ensures admin can remove any alert and clean up all index entries.
 #[test]
 fn test_regression_remove_alert_by_admin_missing() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
+    let (env, admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
-    client.initialize(&admin);
 
     let id = client.register_alert(
         &owner,
@@ -238,7 +235,7 @@ fn test_regression_remove_alert_by_admin_missing() {
 /// Ensures toggling `active` bool via `update_alert` correctly synchronizes `DataKey::AlertActive`.
 #[test]
 fn test_regression_update_alert_keeps_alert_active_in_sync() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -270,7 +267,7 @@ fn test_regression_update_alert_keeps_alert_active_in_sync() {
 /// Ensures `renew_alert_ttl` does NOT advance `updated_at`, preserving sync integrity for incremental syncs.
 #[test]
 fn test_regression_renew_alert_ttl_preserves_updated_at() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -307,7 +304,7 @@ fn test_regression_renew_alert_ttl_preserves_updated_at() {
 /// discards the staged rotation, so the confirm has nothing to promote.
 #[test]
 fn test_regression_update_webhook_clears_stale_pending_hash() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -358,7 +355,7 @@ enum LegacyDataKey {
 /// exceed the per-owner alert limit).
 #[test]
 fn test_regression_owner_live_count_migrates_legacy_key() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -432,9 +429,7 @@ fn alert_entry_ttls(
 /// the alert depends on must be back at the full `DEFAULT_TTL`.
 #[test]
 fn test_regression_every_mutator_refreshes_all_alert_ttls() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let owner = Address::generate(&env);
     let new_owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -531,7 +526,7 @@ fn test_regression_every_mutator_refreshes_all_alert_ttls() {
 
 /// Register one alert for a fresh owner; returns `(env, client, owner, target, id)`.
 fn transfer_fixture() -> (Env, AlertRegistryClient<'static>, Address, Address, u64) {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let id = client.register_alert(
@@ -577,7 +572,7 @@ fn test_regression_alert_transfer_requires_recipient_acceptance() {
 #[test]
 fn test_regression_alert_transfer_accept_requires_recipient_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let new_owner = Address::generate(&env);
@@ -715,9 +710,8 @@ fn test_regression_alert_transfer_rejects_self_and_paused() {
         ContractError::InvalidTransferRecipient
     );
 
-    let admin = Address::generate(&env);
+    let admin = client.get_admin();
     let recipient = Address::generate(&env);
-    client.initialize(&admin);
     client.propose_alert_transfer(&owner, &id, &recipient);
     client.pause(&admin);
     assert_eq!(
@@ -745,9 +739,7 @@ fn advance_almost_default_ttl(env: &Env) {
 /// per-owner limit must still hold.
 #[test]
 fn test_regression_owner_live_count_survives_keepalive_only_activity() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     client.set_per_owner_alert_limit(&admin, &1);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -799,7 +791,7 @@ fn test_regression_owner_live_count_survives_keepalive_only_activity() {
 /// total: the flag must stay live and correct throughout.
 #[test]
 fn test_regression_alert_active_survives_repeated_edits() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let id = client.register_alert(
@@ -873,9 +865,7 @@ fn register(env: &Env, client: &AlertRegistryClient, owner: &Address, label: &st
 /// first, so the owner can register again.
 #[test]
 fn test_regression_expired_alerts_release_quota_on_register() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     client.set_per_owner_alert_limit(&admin, &2);
     let owner = Address::generate(&env);
 
@@ -914,7 +904,7 @@ fn test_regression_expired_alerts_release_quota_on_register() {
 /// dangling entry from the caller's own index.
 #[test]
 fn test_regression_remove_alert_cleans_up_expired_record() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let stranger = Address::generate(&env);
     let id = register(&env, &client, &owner, "Expires");
@@ -946,7 +936,7 @@ fn test_regression_remove_alert_cleans_up_expired_record() {
 /// clean-up that only touches IDs whose record is gone.
 #[test]
 fn test_regression_prune_expired_alerts() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let a = register(&env, &client, &owner, "A");
     let b = register(&env, &client, &owner, "B");
@@ -977,9 +967,7 @@ fn test_regression_prune_expired_alerts() {
 /// victim contract.
 #[test]
 fn test_regression_retarget_respects_per_contract_limit() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     client.set_per_contract_alert_limit(&admin, &1);
 
     let owner = Address::generate(&env);
@@ -1020,9 +1008,7 @@ fn test_regression_retarget_respects_per_contract_limit() {
 /// accounts could pile any number of alerts onto one owner.
 #[test]
 fn test_regression_transfer_respects_recipient_per_owner_limit() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     client.set_per_owner_alert_limit(&admin, &1);
 
     let sender = Address::generate(&env);
@@ -1064,9 +1050,7 @@ fn test_regression_transfer_respects_recipient_per_owner_limit() {
 /// The alert is now suspended until an admin unlocks it.
 #[test]
 fn test_regression_owner_cannot_undo_admin_deactivation() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let owner = Address::generate(&env);
     let rules = vec![&env, str(&env, "rule:transfer")];
     let id = client.register_alert(
@@ -1118,9 +1102,7 @@ fn test_regression_admin_suspension_follows_the_alert() {
 /// `Err(Paused)` like every other mutator and leaves the alerts untouched.
 #[test]
 fn test_regression_deactivate_all_alerts_rejects_while_paused() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1154,10 +1136,8 @@ fn test_regression_deactivate_all_alerts_rejects_while_paused() {
 /// address, so a malformed address cannot trap or replace `Paused`.
 #[test]
 fn test_regression_set_watcher_registry_checks_pause_before_probe() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
+    let (env, admin, client) = setup();
     let invalid_registry = Address::generate(&env);
-    client.initialize(&admin);
     client.pause(&admin);
 
     assert_eq!(
@@ -1186,7 +1166,7 @@ fn advance_ledgers(env: &Env, ledgers: u32) {
 /// `INSTANCE_BUMP_AMOUNT` before it expires.
 #[test]
 fn test_regression_bump_instance_ttl_keeps_instance_alive() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let initial_ttl = instance_ttl(&env, &client);
     assert!(initial_ttl < crate::INSTANCE_BUMP_THRESHOLD);
 
@@ -1210,12 +1190,10 @@ fn test_regression_bump_instance_ttl_keeps_instance_alive() {
 /// in `next_id` and the admin setters) extends the instance entry.
 #[test]
 fn test_regression_instance_writes_extend_instance_ttl() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
+    let (env, admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
-    client.initialize(&admin);
     assert_eq!(instance_ttl(&env, &client), crate::INSTANCE_BUMP_AMOUNT);
 
     // Age the entry below the bump threshold, then write through next_id.
@@ -1260,9 +1238,7 @@ fn persistent_ttl(env: &Env, client: &AlertRegistryClient, key: &crate::DataKey)
 /// target's other alerts.
 #[test]
 fn test_regression_mutators_refresh_indexes_they_leave() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let owner = Address::generate(&env);
     let new_owner = Address::generate(&env);
     let rules = vec![&env, str(&env, "rule:transfer")];
@@ -1299,9 +1275,7 @@ fn test_regression_mutators_refresh_indexes_they_leave() {
 /// (`pause`, `unpause`, `initialize`, `upgrade`) are not in the table.
 #[test]
 fn test_regression_every_mutator_rejects_while_paused() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let owner = Address::generate(&env);
     let recipient = Address::generate(&env);
     let target = Address::generate(&env);
@@ -1623,7 +1597,7 @@ fn test_regression_instance_keys_match_legacy_symbols() {
 
     // State written under the literal keys (as a deployed pre-#211 build
     // would have left it) is read back through the new constants.
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let admin = Address::generate(&env);
     env.as_contract(&client.address, || {
         let storage = env.storage().instance();

@@ -41,15 +41,16 @@ pub fn str_repeat(env: &Env, ch: char, n: usize) -> String {
 
 // ── Setup helpers ─────────────────────────────────────────────────────────────
 
-/// Set up a bare [`AlertRegistry`] environment (no admin initialised).
+/// Set up an [`AlertRegistry`] environment, registered with a constructor admin.
 ///
-/// Returns `(env, client)`.
-pub fn setup_alert_registry() -> (Env, AlertRegistryClient<'static>) {
+/// Returns `(env, admin, client)`.
+pub fn setup_alert_registry() -> (Env, Address, AlertRegistryClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(AlertRegistry, ());
+    let admin = Address::generate(&env);
+    let contract_id = env.register(AlertRegistry, (&admin,));
     let client = AlertRegistryClient::new(&env, &contract_id);
-    (env, client)
+    (env, admin, client)
 }
 
 /// Set up a [`WatcherRegistry`] environment with the admin already initialised.
@@ -68,19 +69,23 @@ pub fn setup_watcher_registry() -> (Env, Address, WatcherRegistryClient<'static>
 /// Set up both registries in a single shared environment — suitable for
 /// cross-contract / integration tests.
 ///
-/// Returns `(env, alert_client, watcher_client)`.
+/// Both contracts are registered with the same constructor admin.
+///
+/// Returns `(env, admin, alert_client, watcher_client)`.
 pub fn setup_both() -> (
     Env,
+    Address,
     AlertRegistryClient<'static>,
     WatcherRegistryClient<'static>,
 ) {
     let env = Env::default();
     env.mock_all_auths();
-    let alert_id = env.register(AlertRegistry, ());
-    let watcher_id = env.register(WatcherRegistry, ());
+    let admin = Address::generate(&env);
+    let alert_id = env.register(AlertRegistry, (&admin,));
+    let watcher_id = env.register(WatcherRegistry, (&admin,));
     let alert_client = AlertRegistryClient::new(&env, &alert_id);
     let watcher_client = WatcherRegistryClient::new(&env, &watcher_id);
-    (env, alert_client, watcher_client)
+    (env, admin, alert_client, watcher_client)
 }
 
 /// A fixture for gated integration tests where AlertRegistry is configured with
@@ -98,7 +103,7 @@ pub struct GatedFixture<'a> {
 ///
 /// Performs the following setup:
 /// 1. Creates both contract instances
-/// 2. Initializes WatcherRegistry with an admin
+/// 2. Registers both with a constructor admin
 /// 3. Registers a watcher in WatcherRegistry
 /// 4. Registers the WatcherRegistry as the gating mechanism in AlertRegistry
 ///
@@ -107,16 +112,13 @@ pub fn setup_gated() -> GatedFixture<'static> {
     let env = Env::default();
     env.mock_all_auths();
 
-    let alert_id = env.register(AlertRegistry, ());
-    let watcher_id = env.register(WatcherRegistry, ());
+    let admin = Address::generate(&env);
+    let alert_id = env.register(AlertRegistry, (&admin,));
+    let watcher_id = env.register(WatcherRegistry, (&admin,));
     let alert_client = AlertRegistryClient::new(&env, &alert_id);
     let watcher_client = WatcherRegistryClient::new(&env, &watcher_id);
 
-    let admin = Address::generate(&env);
     let watcher = Address::generate(&env);
-
-    // Initialize WatcherRegistry with the admin
-    watcher_client.initialize(&admin);
 
     // Register the watcher in WatcherRegistry
     watcher_client.register_watcher(&admin, &watcher);

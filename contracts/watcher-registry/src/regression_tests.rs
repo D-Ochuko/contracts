@@ -7,10 +7,9 @@ use soroban_sdk::{
 fn setup() -> (Env, Address, WatcherRegistryClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(WatcherRegistry, ());
-    let client = WatcherRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let contract_id = env.register(WatcherRegistry, (&admin,));
+    let client = WatcherRegistryClient::new(&env, &contract_id);
     (env, admin, client)
 }
 
