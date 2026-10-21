@@ -24,6 +24,7 @@ This applies to:
 - `DataKey::ContractIndex(address)` — per-contract alert ID lists
 - `DataKey::ContractLiveCount(address)` — per-contract live alert count
 - `DataKey::DeactivationCursor(address)` — resume point for a bulk deactivation
+- `DataKey::PruneCursor(address)` — resume point for an expired-alert prune
 
 The exception is `DataKey::PendingTransfer(id)`, which uses
 `ALERT_TRANSFER_EXPIRY_LEDGERS` (see [Non-Default TTLs](#non-default-ttls)).
@@ -40,7 +41,9 @@ Only these paths write a TTL other than `DEFAULT_TTL`:
 | Entry | TTL (ledgers) | Wall-clock | Set by |
 |-------|---------------|------------|--------|
 | `PendingTransfer(id)` | `ALERT_TRANSFER_EXPIRY_LEDGERS` = 120 960 | ~7 days | `propose_alert_transfer` |
-| `Alert`, `AlertActive`, `OwnerIndex`, `ContractIndex` (and the other alert-dependent entries) | Requested, capped at `MAX_TTL` = 535 680 | up to ~31 days | `bump_alert` |
+| `Alert`, `AlertActive`, `OwnerIndex`, `ContractIndex` (and the other alert-dependent entries) | Requested, capped at `MAX_TTL` = 535 680 (at least `DEFAULT_TTL`; smaller values are rejected with `InvalidTtl`) | up to ~31 days | `bump_alert` (anyone) |
+| The same alert-dependent entries | Requested, between `DEFAULT_TTL` and `MAX_TTL` | up to ~31 days | `renew_alert_ttl_for` (owner only) |
+| The same alert-dependent entries | at least `ALERT_TRANSFER_EXPIRY_LEDGERS` = 120 960 | ~7 days | `propose_alert_transfer`, so the alert cannot expire while the transfer is open |
 | Instance entry (both registries) | `INSTANCE_BUMP_AMOUNT` = 535 680 | ~31 days | `bump_instance_ttl` |
 
 `PendingTransfer` is written only by `propose_alert_transfer` and is not
@@ -52,9 +55,12 @@ refreshed by any other mutator, so a proposed transfer lapses after its own
 **Removal tombstones.** `remove_alert`, `remove_alert_by_admin` and
 `batch_remove_alert` replace `Alert(id)` with a `RemovedAlert(id)` tombstone
 (`active == false`) so incremental sync can report the removal. The tombstone
-is written with `DEFAULT_TTL` and nothing extends it afterwards: `touch_alert`
-does not cover it and `bump_alert` cannot reach it. It is archived about 24
-hours after removal (see #360).
+is written with `TOMBSTONE_TTL` (120,960 ledgers, about 7 days) and nothing
+extends it afterwards: `touch_alert` does not cover it and `bump_alert` cannot
+reach it. `get_min_sync_ledger()` returns `current_ledger - TOMBSTONE_TTL`
+(saturating at 0), the oldest sync cursor guaranteed to see every removal. A
+client whose `since_ledger` cursor is below it may have missed tombstones and
+must do a full resync (discard local state, then sync from `0`).
 
 **Bulk deactivation cursor.** `deactivate_all_alerts` stores
 `DeactivationCursor(owner)` with `DEFAULT_TTL` only when a call stops at
@@ -226,8 +232,8 @@ pub const DEFAULT_TTL: u32 = 120_960;
 ```
 
 `ALERT_TRANSFER_EXPIRY_LEDGERS` and the `INSTANCE_BUMP_*` constants are separate
-and do not follow `DEFAULT_TTL`. The `RemovedAlert` tombstone also uses
-`DEFAULT_TTL`, so raising it extends how long removals stay visible to sync.
+and do not follow `DEFAULT_TTL`. The `RemovedAlert` tombstone uses its own
+`TOMBSTONE_TTL`, which sets how long removals stay visible to sync.
 
 ## Further Reading
 
