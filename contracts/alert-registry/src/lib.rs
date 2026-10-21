@@ -4185,30 +4185,20 @@ mod tests {
         );
     }
 
-    // 19. Register an alert with exactly 50 valid rule strings.
+    // 19. Instruction cost of registering the largest valid rule list.
     //
-    // This verifies that the contract handles the maximum allowed rule count
-    // without hitting Soroban instruction limits. We alternate between the
-    // two valid rule descriptors ("rule:transfer" and "rule:mint") to fill
-    // all 50 slots, then confirm every entry is stored correctly.
+    // Only two distinct descriptors are valid ("rule:transfer" and
+    // "rule:mint") and duplicates are rejected, so the largest valid list has
+    // two entries. Measure its instruction cost against a generous bound.
     #[test]
     fn test_register_alert_with_50_rules_no_instruction_limit() {
         let (env, client) = setup();
         let owner = Address::generate(&env);
         let target = Address::generate(&env);
 
-        // Build a vec of 50 valid rules, alternating between the two
-        // accepted descriptors so the list is realistic.
-        let mut rules: Vec<String> = vec![&env];
-        for i in 0..50u32 {
-            let rule = if i % 2 == 0 {
-                str(&env, "rule:transfer")
-            } else {
-                str(&env, "rule:mint")
-            };
-            rules.push_back(rule);
-        }
+        let rules: Vec<String> = vec![&env, str(&env, "rule:transfer"), str(&env, "rule:mint")];
 
+        let cpu_before = env.cost_estimate().budget().cpu_instruction_cost();
         let id = client.register_alert(
             &owner,
             &target,
@@ -4216,15 +4206,43 @@ mod tests {
             &hash64(&env),
             &rules,
         );
+        let cpu_after = env.cost_estimate().budget().cpu_instruction_cost();
+        let cost = cpu_after.saturating_sub(cpu_before);
+        assert!(
+            cost < 100_000_000,
+            "register_alert with max valid rules used {cost} instructions"
+        );
 
         let cfg = client.get_alert(&owner, &id).unwrap();
-        assert_eq!(cfg.rules.len(), 50, "all 50 rules should be persisted");
-
-        // Spot-check a few entries to confirm data integrity.
+        assert_eq!(cfg.rules.len(), 2);
         assert_eq!(cfg.rules.get(0).unwrap(), str(&env, "rule:transfer"));
         assert_eq!(cfg.rules.get(1).unwrap(), str(&env, "rule:mint"));
-        assert_eq!(cfg.rules.get(48).unwrap(), str(&env, "rule:transfer"));
-        assert_eq!(cfg.rules.get(49).unwrap(), str(&env, "rule:mint"));
+    }
+
+    // 19b. A 50-element list of duplicate descriptors is rejected.
+    #[test]
+    fn test_register_alert_with_50_duplicate_rules_returns_duplicate_rule() {
+        let (env, _admin, client) = setup();
+        let owner = Address::generate(&env);
+        let target = Address::generate(&env);
+
+        let mut rules: Vec<String> = vec![&env];
+        for i in 0..50u32 {
+            rules.push_back(if i % 2 == 0 {
+                str(&env, "rule:transfer")
+            } else {
+                str(&env, "rule:mint")
+            });
+        }
+
+        let result = client.try_register_alert(
+            &owner,
+            &target,
+            &str(&env, "Bulk Rules Alert"),
+            &hash64(&env),
+            &rules,
+        );
+        assert_eq!(result, Err(Ok(ContractError::DuplicateRule)));
     }
 
     // ── Feature A: update_label ───────────────────────────────────────────────
