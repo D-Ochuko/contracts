@@ -2420,6 +2420,16 @@ mod tests {
             assert_eq!(client.try_register_watcher(&admin, &w).unwrap(), Ok(()));
         }
         assert_eq!(client.get_watcher_count(), MAX_WATCHERS);
+        let overflow = Address::generate(&env);
+        assert_eq!(
+            client
+                .try_register_watcher(&admin, &overflow)
+                .unwrap_err()
+                .unwrap(),
+            ContractError::MaxWatchersReached
+        );
+        assert_eq!(client.get_watchers().len(), MAX_WATCHERS);
+    }
 
     #[test]
     #[should_panic(expected = "Error(Auth, InvalidAction)")]
@@ -2448,15 +2458,6 @@ mod tests {
         client.propose_admin_transfer(&admin, &new_admin);
         env.set_auths(&[]);
         client.accept_admin_transfer(&new_admin);
-        let overflow = Address::generate(&env);
-        assert_eq!(
-            client
-                .try_register_watcher(&admin, &overflow)
-                .unwrap_err()
-                .unwrap(),
-            ContractError::MaxWatchersReached
-        );
-        assert_eq!(client.get_watchers().len(), MAX_WATCHERS);
     }
 
     // 32. A full registry still accepts re-registering an existing watcher (no growth).
