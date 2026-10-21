@@ -751,8 +751,10 @@ Enables incremental sync for watcher nodes by passing the ledger timestamp of th
 matching `updated_at >= since` among the IDs in `[offset, offset + limit)`.
 Continue paging by increasing `offset` by `limit` until it reaches
 `get_alert_count()`; a short or empty page does not indicate that later IDs
-cannot match. A tombstone has `active == false` and identifies an alert that
-must be removed from the watcher's local state.
+cannot match. A tombstone has `removed == true` (and `active == false`) and
+identifies an alert that must be purged from the watcher's local state. An
+entry with `active == false` and `removed == false` is a paused alert: keep it
+and mark it inactive. Always branch on `removed`, never on `active` alone.
 All paginated alert queries cap `limit` at `MAX_PAGE_SIZE` (100 IDs), so
 passing a larger value is safe and does not create an unbounded RPC simulation.
 

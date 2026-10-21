@@ -298,6 +298,9 @@ pub struct AlertConfig {
     pub updated_ledger: u32,
     /// Whether the alert is currently active.
     pub active: bool,
+    /// `true` only on a removal tombstone returned by the sync queries.
+    /// A deactivated (paused) alert has `active == false` and `removed == false`.
+    pub removed: bool,
 }
 
 /// An ownership transfer proposed by an alert's owner and awaiting the
@@ -1159,6 +1162,7 @@ impl AlertRegistry {
             updated_at: now,
             updated_ledger: env.ledger().sequence(),
             active: true,
+            removed: false,
         };
 
         Self::push_owner_index(&env, &owner, id)?;
@@ -3155,6 +3159,7 @@ impl AlertRegistry {
         let mut tombstone = config.clone();
         tombstone.pending_webhook_hash = None;
         tombstone.active = false;
+        tombstone.removed = true;
         tombstone.updated_at = env.ledger().timestamp();
         tombstone.updated_ledger = env.ledger().sequence();
         env.storage()
@@ -5646,6 +5651,27 @@ mod tests {
         let results = client.get_alerts_modified_since(&0u64, &0u32, &u32::MAX);
         assert_eq!(results.len(), 1);
         assert_eq!(results.get(0).unwrap().label, str(&env, "B"));
+    }
+
+    // 22b. Tombstones are distinguishable from deactivated alerts via `removed`
+    #[test]
+    fn test_sync_distinguishes_removed_from_deactivated() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let target = Address::generate(&env);
+        let rules = vec![&env, str(&env, "rule:transfer")];
+
+        let paused = client.register_alert(&owner, &target, &str(&env, "P"), &hash64(&env), &rules);
+        let gone = client.register_alert(&owner, &target, &str(&env, "R"), &hash64(&env), &rules);
+        client.set_alert_active(&owner, &paused, &false);
+        client.remove_alert(&owner, &gone);
+
+        let results = client.get_alerts_modified_since_ledger(&0u32, &0u32, &u32::MAX);
+        assert_eq!(results.len(), 2);
+        let p = results.get(0).unwrap();
+        assert!(!p.active && !p.removed);
+        let r = results.get(1).unwrap();
+        assert!(!r.active && r.removed);
     }
 
     // 23. since is exclusive of nothing — boundary value exactly equal is included
