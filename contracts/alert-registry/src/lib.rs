@@ -124,6 +124,9 @@ pub enum DataKey {
 /// They are deliberately not [`DataKey`] variants: a variant is encoded as
 /// `[Symbol("Name"), ...]`, not as the bare symbol, so it would orphan the
 /// values already stored under these keys.
+///
+/// Note: [`DataKey::PendingAdminTransfer`] is also stored in instance storage
+/// (via `env.storage().instance()`), even though it is a `DataKey` variant.
 pub mod instance_key {
     use soroban_sdk::{symbol_short, Symbol};
 
@@ -138,7 +141,7 @@ pub mod instance_key {
     pub const LIMIT: Symbol = symbol_short!("LIMIT");
     /// `u32` per-contract alert limit (`0` = unlimited).
     pub const CLIMIT: Symbol = symbol_short!("CLIMIT");
-    /// `u32` ceiling on the total number of alerts ever registered (`0` = none).
+    /// `u32` ceiling on the total number of live alerts (`0` = none).
     pub const GLIMIT: Symbol = symbol_short!("GLIMIT");
     /// `u64` number of currently live alert records.
     pub const LIVE: Symbol = symbol_short!("LIVE");
@@ -300,7 +303,7 @@ pub struct RegistryConfiguration {
     pub per_owner_alert_limit: u32,
     /// Maximum live alerts per target contract, or `0` for unlimited.
     pub per_contract_alert_limit: u32,
-    /// Maximum alerts ever registered, or `0` for unlimited.
+    /// Maximum live alerts, or `0` for unlimited.
     pub global_alert_limit: u32,
     /// Configured watcher registry, if watcher-gating is enabled.
     pub watcher_registry: Option<Address>,
@@ -758,7 +761,7 @@ impl AlertRegistry {
             .unwrap_or(0u32)
     }
 
-    /// Set a global ceiling on the total number of alerts ever registered
+    /// Set a global ceiling on the total number of live alerts
     /// (admin only). A value of `0` means no limit.
     ///
     /// This bounds the cost of registry-wide scans such as
@@ -1273,9 +1276,6 @@ impl AlertRegistry {
     /// Unlike [`Self::bump_alert`], this is owner-authenticated and leaves
     /// `updated_at` and `updated_ledger` alone, so renewing storage never looks like an edit to
     /// downstream consumers polling `get_alerts_modified_since` or `get_alerts_modified_since_ledger`.
-    /// Unlike [`AlertRegistry::bump_alert`], this is owner-authenticated and leaves
-    /// `updated_at` alone, so renewing storage never looks like an edit to
-    /// downstream consumers polling `get_alerts_modified_since`.
     ///
     /// # Auth
     /// Requires a valid Stellar auth signature from `caller`, who must be the
@@ -2312,7 +2312,7 @@ impl AlertRegistry {
     /// # Note
     /// The scan cost of a single call is bounded by `limit`, not by the total
     /// size of the registry, so callers should page through with a bounded
-    /// `limit` (see [`get_global_alert_limit`] for an admin-settable ceiling
+    /// `limit` (see [`AlertRegistry::get_global_alert_limit`] for an admin-settable ceiling
     /// on total registry size) rather than requesting the whole ID space in
     /// one call.
     #[must_use]
@@ -2565,8 +2565,6 @@ impl AlertRegistry {
         Ok(())
     }
 
-    /// Reject registration once the number of currently live alerts reaches
-    /// the configured global ceiling. A limit of `0` means no ceiling.
     /// Read the per-contract live-alert counter, lazily rebuilding it for
     /// contracts written before the counter was introduced.
     fn contract_live_count(env: &Env, target: &Address) -> u32 {
@@ -2590,7 +2588,7 @@ impl AlertRegistry {
         env.storage().persistent().extend_ttl(&key, DEFAULT_TTL, DEFAULT_TTL);
     }
 
-    /// Reject registration once the total number of alerts ever registered
+    /// Reject registration once the total number of live alerts
     /// (the monotonic [`instance_key::NEXT_ID`] counter) reaches the
     /// configured global ceiling. A limit of `0` means no ceiling.
     fn assert_global_alert_limit(env: &Env) -> Result<(), ContractError> {
@@ -2976,7 +2974,7 @@ impl AlertRegistry {
     /// Validates a vector of rule descriptors.
     ///
     /// Ensures at most 50 rules are supplied, each rule matches a recognized
-    /// prefix, and no descriptor appears more than once.
+    /// descriptor, and no descriptor appears more than once.
     /// Exposed for testing, integration, and fuzz testing.
     /// # Errors
     /// Returns [`ContractError::TooManyRules`] if rules length exceeds 50.
