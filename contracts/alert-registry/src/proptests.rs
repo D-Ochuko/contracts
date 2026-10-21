@@ -25,10 +25,9 @@ use soroban_sdk::{
 fn create_env_and_client() -> (Env, Address, AlertRegistryClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(AlertRegistry, ());
-    let client = AlertRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let contract_id = env.register(AlertRegistry, (&admin,));
+    let client = AlertRegistryClient::new(&env, &contract_id);
     (env, admin, client)
 }
 

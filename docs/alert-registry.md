@@ -128,7 +128,7 @@ Registers a new alert configuration for a target contract address.
 
 | Error | Code | Cause |
 |---|---|---|
-| `TooManyRules` | 8 | More than 50 rules were supplied |
+| `TooManyRules` | 8 | More than `MAX_RULES_PER_ALERT` (`VALID_RULE_DESCRIPTORS.len()`, currently 2) rules were supplied |
 | `InvalidRuleDescriptor` | 9 | A rule is not `rule:transfer` or `rule:mint` |
 | `DuplicateRule` | 15 | The same rule descriptor appears more than once |
 
@@ -343,7 +343,7 @@ Removes any alert config by ID. Requires admin auth.
 
 Deactivates any alert by ID without deleting its record. Unlike `remove_alert_by_admin`, the alert config and its owner/contract indexes are left intact — only the `active` flag is cleared — so an admin can moderate a single problematic alert (spam, abuse report) while preserving its history. Admin only.
 
-The alert is also **suspended** (`DataKey::AdminSuspended(id)`): the owner cannot reactivate it with `update_alert(..., active = true)` (`AlertSuspended`) until an admin calls `unlock_alert_by_admin`. The suspension stays with the alert if ownership is transferred and is cleared when the alert is removed (#202).
+The alert is also **suspended** (`DataKey::AdminSuspended(id)`): the owner cannot reactivate it with `update_alert(..., active = true)` (`AlertSuspended`) until an admin calls `unlock_alert_by_admin`. Suspending an alert that is already suspended does nothing. The suspension stays with the alert if ownership is transferred and is cleared when the alert is removed (#202).
 
 **Requires auth:** `admin`
 
@@ -358,7 +358,7 @@ The alert is also **suspended** (`DataKey::AdminSuspended(id)`): the owner canno
 
 **Errors:** Returns `ContractError::AlertNotFound` if ID does not exist; `ContractError::Unauthorized` if caller is not the admin.
 
-**Events:** Emits `(Symbol("alert"), Symbol("admin_off"))` with data `(id: u64, admin: Address)`.
+**Events:** Emits `(Symbol("alert"), Symbol("admin_off"))` with data `(id: u64, admin: Address)` when a suspension was applied.
 
 ---
 
@@ -425,9 +425,23 @@ Removes IDs from `owner`'s index whose alert record no longer exists (expired in
 
 Each call examines at most `MAX_PRUNE_PER_CALL` (50) index entries, resuming from a stored `PruneCursor`, like `deactivate_all_alerts`. `get_prune_cursor(owner) -> Option<u32>` returns `Some(_)` while a scan is still in progress; call `prune_expired_alerts` again until it returns `None`.
 
-**Events:** Emits `(Symbol("alert"), Symbol("pruned"))` with data `(owner: Address, count: u32)` when at least one ID was removed.
+**Events:** Emits `(Symbol("alert"), Symbol("pruned"))` with data `(owner: Address, count: u32, ids: Vec<u64>)` when at least one ID was removed.
 
-**Limitation:** the expired alert's `ContractIndex` entry cannot be removed, because the target contract was only recorded in the expired record. It does not count against any limit: per-contract counts only count IDs whose record exists.
+**Contract side:** each alert's target is also stored under `AlertTarget(id)`, so pruning repairs the target's `ContractIndex` and `ContractLiveCount` too. Expired alerts therefore release their per-contract quota.
+
+---
+
+### `prune_contract_index`
+
+Drops IDs from `target`'s contract index whose alert record no longer exists (expired) and recounts `ContractLiveCount`. Callable by anyone with no auth. Scans the whole contract index.
+
+**Parameters**
+
+| Name | Type | Description |
+|---|---|---|
+| `target` | `Address` | Contract whose index is cleaned up |
+
+**Returns:** `u32` — the number of dangling IDs removed
 
 ---
 
@@ -810,12 +824,22 @@ Enables incremental sync for watcher nodes by passing the ledger timestamp of th
 matching `updated_at >= since` among the IDs in `[offset, offset + limit)`.
 Continue paging by increasing `offset` by `limit` until it reaches
 `get_alert_count()`; a short or empty page does not indicate that later IDs
-cannot match. A tombstone has `active == false` and identifies an alert that
-must be removed from the watcher's local state.
+cannot match. A tombstone has `removed == true` (and `active == false`) and
+identifies an alert that must be purged from the watcher's local state. An
+entry with `active == false` and `removed == false` is a paused alert: keep it
+and mark it inactive. Always branch on `removed`, never on `active` alone.
 All paginated alert queries cap `limit` at `MAX_PAGE_SIZE` (100 IDs), so
 passing a larger value is safe and does not create an unbounded RPC simulation.
 
 **Returns:** `Vec<AlertConfig>` — live alerts matching `updated_at >= since`.
+
+---
+
+### `get_min_sync_ledger`
+
+Returns the oldest ledger sequence from which incremental sync is guaranteed to include every removal tombstone (`current_ledger - TOMBSTONE_TTL`, saturating at 0). If a client's `since_ledger` cursor is below this value it must fall back to a full resync.
+
+**Returns:** `u32`
 
 ---
 
@@ -944,7 +968,7 @@ This includes admin moderation (`deactivate_alert_by_admin`, `unlock_alert_by_ad
 | `NotAWatcher` | 5 | Watcher-gating is enabled and `querier` is not a registered watcher |
 | `InvalidWebhookHash` | 6 | `register_alert`, `update_webhook` or `propose_webhook` called with the all-zero webhook hash (never the SHA-256 of a URL). Wrong lengths cannot occur: hashes are `BytesN<32>`. |
 | `LabelTooLong` | 7 | `label` exceeds 128 bytes |
-| `TooManyRules` | 8 | `rules` exceeds the 50-rule maximum |
+| `TooManyRules` | 8 | `rules` exceeds `MAX_RULES_PER_ALERT` (`VALID_RULE_DESCRIPTORS.len()`, currently 2) |
 | `InvalidRuleDescriptor` | 9 | A rule is not a recognised descriptor (`rule:transfer`, `rule:mint`) |
 | `OwnerAlertLimitExceeded` | 10 | Owner is at the configured per-owner active alert limit |
 | `DuplicateAlertId` | 11 | Internal invariant violation — an ID was already present in an index |

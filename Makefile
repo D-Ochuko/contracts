@@ -1,5 +1,5 @@
 .PHONY: build test lint fmt check-events shellcheck deploy-testnet verify upgrade audit \
-	bindings bindings-watcher bindings-alert bindings-all clean
+        bindings bindings-watcher bindings-alert bindings-all clean spec-check spec-golden-update
 
 build:
 	cargo build --release --target wasm32-unknown-unknown --locked -p alert-registry -p watcher-registry
@@ -67,3 +67,14 @@ clean:
 	cargo clean
 	rm -rf bindings/watcher-registry/dist bindings/watcher-registry/node_modules
 	rm -rf bindings/alert-registry/dist bindings/alert-registry/node_modules
+
+# Contract spec golden-file check.
+# Fails if the committed contracts/*/spec.golden.json no longer matches the
+# spec embedded in the built (and optimized) WASM.
+spec-check:
+	bash scripts/spec-golden.sh
+
+# Overwrite the committed golden files with the spec extracted from the built
+# WASM. Run only after building and optimizing the release WASM.
+spec-golden-update:
+	bash scripts/update-spec-golden.sh

@@ -53,6 +53,7 @@ echo "==> Upgrading contract: $CONTRACT ($CONTRACT_ID)"
 echo "==> Identity: $IDENTITY ($ADMIN)"
 
 # Build only the target crate with -p and --locked via common build_contract helper
+WASM="$(wasm_path "$CONTRACT")"
 build_contract "$CONTRACT"
 
 echo "==> Fetching current deployed WASM hash..."

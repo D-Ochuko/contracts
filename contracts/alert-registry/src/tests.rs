@@ -8,12 +8,13 @@ use soroban_sdk::{
     vec, Address, BytesN, Env, FromVal, String, Symbol, Vec,
 };
 
-fn setup() -> (Env, AlertRegistryClient<'static>) {
+fn setup() -> (Env, Address, AlertRegistryClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(AlertRegistry, ());
+    let admin = Address::generate(&env);
+    let contract_id = env.register(AlertRegistry, (&admin,));
     let client = AlertRegistryClient::new(&env, &contract_id);
-    (env, client)
+    (env, admin, client)
 }
 
 /// A webhook hash (32-byte SHA-256 digest) with every byte set to `c`;
@@ -47,7 +48,7 @@ fn str_repeat(env: &Env, ch: char, n: usize) -> String {
 // 1. Happy path — register and retrieve
 #[test]
 fn test_register_and_get_alert() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -68,7 +69,7 @@ fn test_register_and_get_alert() {
 // 2. Happy path — update alert
 #[test]
 fn test_update_alert() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -95,7 +96,7 @@ fn test_update_alert() {
 // update_alert emits an alert.update event
 #[test]
 fn test_update_alert_emits_event() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -115,7 +116,7 @@ fn test_update_alert_emits_event() {
 // 3. Happy path — remove alert
 #[test]
 fn test_remove_alert() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -134,7 +135,7 @@ fn test_remove_alert() {
 // 4. Unauthorized update rejected
 #[test]
 fn test_update_unauthorized() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let attacker = Address::generate(&env);
     let target = Address::generate(&env);
@@ -159,7 +160,7 @@ fn test_update_unauthorized() {
 #[test]
 #[should_panic(expected = "Error(Contract, #9)")]
 fn test_register_alert_rejects_invalid_rules() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -175,7 +176,7 @@ fn test_register_alert_rejects_invalid_rules() {
 #[test]
 #[should_panic(expected = "Error(Contract, #9)")]
 fn test_update_alert_rejects_invalid_rules() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -192,9 +193,7 @@ fn test_update_alert_rejects_invalid_rules() {
 
 #[test]
 fn test_admin_remove_any_alert() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
 
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -213,10 +212,8 @@ fn test_admin_remove_any_alert() {
 // initialize emits an admin.init event on first initialization
 #[test]
 fn test_initialize_emits_event() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
+    let (env, admin, client) = setup();
 
-    client.initialize(&admin);
 
     assert!(!env.events().all().is_empty());
 }
@@ -227,9 +224,7 @@ fn test_initialize_emits_event() {
 fn test_set_per_owner_alert_limit_emits_event() {
     use soroban_sdk::{symbol_short, testutils::Events as _};
 
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
 
     client.set_per_owner_alert_limit(&admin, &5u32);
 
@@ -254,9 +249,7 @@ fn test_set_per_owner_alert_limit_emits_event() {
 #[test]
 #[should_panic(expected = "Error(Contract, #10)")]
 fn test_admin_set_per_owner_alert_limit() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     client.set_per_owner_alert_limit(&admin, &1u32);
 
     let owner = Address::generate(&env);
@@ -279,9 +272,7 @@ fn test_admin_set_per_owner_alert_limit() {
 
 #[test]
 fn test_admin_transfer_admin() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let new_admin = Address::generate(&env);
 
     client.transfer_admin(&admin, &new_admin);
@@ -299,9 +290,7 @@ fn test_admin_transfer_admin() {
 
 #[test]
 fn test_upgrade_unauthorized() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let attacker = Address::generate(&env);
     let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
 
@@ -316,7 +305,7 @@ fn test_upgrade_unauthorized() {
 
 #[test]
 fn test_upgrade_requires_initialized_admin() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let caller = Address::generate(&env);
     let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
 
@@ -324,13 +313,13 @@ fn test_upgrade_requires_initialized_admin() {
         client.try_upgrade(&caller, &wasm_hash).unwrap_err().unwrap(),
         ContractError::NotInitialized
     );
+}
+
 // ── Pause / circuit-breaker tests ────────────────────────────────────────
 
 #[test]
 fn test_pause_blocks_mutations() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -349,9 +338,7 @@ fn test_pause_blocks_mutations() {
 
 #[test]
 fn test_unpause_restores_mutations() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -371,9 +358,7 @@ fn test_unpause_restores_mutations() {
 
 #[test]
 fn test_pause_allows_reads() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -393,9 +378,7 @@ fn test_pause_allows_reads() {
 
 #[test]
 fn test_pause_unauthorized() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let attacker = Address::generate(&env);
 
     // A caller that is neither admin nor guardian receives NotAGuardian.
@@ -744,12 +727,43 @@ fn test_alert_expiry_cleared_on_remove() {
     assert!(client.get_alert(&owner, &id).is_none());
     assert!(client.get_alert_active(&owner, &id).is_none());
     assert_eq!(client.get_active_alert_count(&owner, &target), 0);
+#[test]
+fn test_pause_and_unpause_are_idempotent() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    // Unpausing while already running is a silent no-op.
+    assert!(!client.is_paused());
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+    assert!(env.events().all().is_empty());
+
+    // First pause transitions state and emits admin.pause.
+    client.pause(&admin);
+    assert!(client.is_paused());
+    assert_eq!(env.events().all().len(), 1);
+
+    // Pausing while already paused is a silent no-op.
+    client.pause(&admin);
+    assert!(client.is_paused());
+    assert!(env.events().all().is_empty());
+
+    // First unpause transitions state and emits admin.unpause.
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+    assert_eq!(env.events().all().len(), 1);
+
+    // Unpausing again while running is a silent no-op.
+    client.unpause(&admin);
+    assert!(!client.is_paused());
+    assert!(env.events().all().is_empty());
 }
 
 // 5. Unauthorized remove rejected
 #[test]
 fn test_remove_unauthorized() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let attacker = Address::generate(&env);
     let target = Address::generate(&env);
@@ -774,14 +788,14 @@ fn test_remove_unauthorized() {
 // 6. Edge case — get nonexistent alert returns None
 #[test]
 fn test_get_nonexistent_alert() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     assert!(client.get_alert(&Address::generate(&env), &999u64).is_none());
 }
 
 // 7. Edge case — get alerts for contract with no alerts returns empty vec
 #[test]
 fn test_get_alerts_for_contract_empty() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let querier = Address::generate(&env);
     let target = Address::generate(&env);
     assert_eq!(client.get_alerts_for_contract(&querier, &target).len(), 0);
@@ -790,7 +804,7 @@ fn test_get_alerts_for_contract_empty() {
 // 8. Index queries
 #[test]
 fn test_index_queries() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let querier = Address::generate(&env);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -817,7 +831,7 @@ fn test_index_queries() {
 // 9. get_alert_count is monotonic
 #[test]
 fn test_get_alert_count() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -833,7 +847,7 @@ fn test_get_alert_count() {
 // get_active_alert_count decreases after remove
 #[test]
 fn test_get_active_alert_count() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -850,7 +864,7 @@ fn test_get_active_alert_count() {
 // the active flag.
 #[test]
 fn test_get_active_alert_count_excludes_deactivated() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -889,7 +903,7 @@ fn test_get_active_alert_count_excludes_deactivated() {
 // 10. update_webhook changes the hash
 #[test]
 fn test_update_webhook() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -915,7 +929,7 @@ fn test_update_webhook() {
 // update_webhook emits an alert.webhook event
 #[test]
 fn test_update_webhook_emits_event() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -935,7 +949,7 @@ fn test_update_webhook_emits_event() {
 // 11. update_webhook unauthorized
 #[test]
 fn test_update_webhook_unauthorized() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let attacker = Address::generate(&env);
     let target = Address::generate(&env);
@@ -952,7 +966,7 @@ fn test_update_webhook_unauthorized() {
 
 #[test]
 fn test_update_alert_missing_returns_not_found() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let attacker = Address::generate(&env);
 
     assert_eq!(
@@ -966,7 +980,7 @@ fn test_update_alert_missing_returns_not_found() {
 
 #[test]
 fn test_remove_alert_nonexistent_returns_not_found() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
 
     assert_eq!(
@@ -981,7 +995,7 @@ fn test_remove_alert_nonexistent_returns_not_found() {
 // 12. active defaults to true on registration
 #[test]
 fn test_active_defaults_to_true() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -995,65 +1009,76 @@ fn test_active_defaults_to_true() {
     assert!(client.get_alert(&owner, &id).unwrap().active);
 }
 
-// 13. register_alert rejects more than 50 rules
+// 13. register_alert rejects more than MAX_RULES_PER_ALERT rules
 #[test]
 #[should_panic(expected = "Error(Contract, #8)")]
 fn test_register_alert_too_many_rules() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
     let mut rules: Vec<String> = vec![&env];
-    for _ in 0..51u32 {
-        rules.push_back(str(&env, "rule"));
+    for _ in 0..(MAX_RULES_PER_ALERT + 1) {
+        rules.push_back(str(&env, "rule:transfer"));
     }
     client.register_alert(&owner, &target, &str(&env, "A"), &hash64(&env), &rules);
 }
 
-// 14. update_alert rejects more than 50 rules
+// 14. update_alert rejects more than MAX_RULES_PER_ALERT rules
 #[test]
 #[should_panic(expected = "Error(Contract, #8)")]
 fn test_update_alert_too_many_rules() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
     let id = client.register_alert(&owner, &target, &str(&env, "A"), &hash64(&env), &vec![&env, str(&env, "rule:transfer")]);
 
     let mut rules: Vec<String> = vec![&env];
-    for _ in 0..51u32 {
-        rules.push_back(str(&env, "rule"));
+    for _ in 0..(MAX_RULES_PER_ALERT + 1) {
+        rules.push_back(str(&env, "rule:transfer"));
     }
     client.update_alert(&owner, &id, &rules, &true);
 }
 
-// 15. exactly 50 rules is accepted
+// 15. exactly MAX_RULES_PER_ALERT distinct rules (derived from VALID_RULE_DESCRIPTORS) is accepted
 #[test]
 fn test_register_alert_exactly_50_rules() {
+    let (env, _admin, client) = setup();
+fn test_register_alert_effective_max_rules() {
     let (env, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
     let mut rules: Vec<String> = vec![&env];
-    for i in 0..50u32 {
-        rules.push_back(str(
-            &env,
-            if i % 2 == 0 {
-                "rule:transfer"
-            } else {
-                "rule:mint"
-            },
-        ));
+    for descriptor in VALID_RULE_DESCRIPTORS {
+        rules.push_back(str(&env, descriptor));
     }
+    assert_eq!(rules.len(), MAX_RULES_PER_ALERT);
+
     let id = client.register_alert(&owner, &target, &str(&env, "A"), &hash64(&env), &rules);
-    assert_eq!(client.get_alert(&owner, &id).unwrap().rules.len(), 50);
+    assert_eq!(
+        client.get_alert(&owner, &id).unwrap().rules.len(),
+        MAX_RULES_PER_ALERT
+    );
+
+    // Adding one more rule exceeds MAX_RULES_PER_ALERT and returns TooManyRules.
+    let mut over_cap = rules.clone();
+    over_cap.push_back(str(&env, VALID_RULE_DESCRIPTORS[0]));
+    assert_eq!(
+        client
+            .try_register_alert(&owner, &target, &str(&env, "Over"), &hash64(&env), &over_cap)
+            .unwrap_err()
+            .unwrap(),
+        ContractError::TooManyRules
+    );
 }
 
 // 16. Label exceeding 128 bytes is rejected
 #[test]
 #[should_panic(expected = "Error(Contract, #7)")]
 fn test_label_too_long() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let long_label = str(&env, &"a".repeat(129));
@@ -1063,7 +1088,7 @@ fn test_label_too_long() {
 // 17. Label at exactly 128 bytes is accepted
 #[test]
 fn test_label_max_length_accepted() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let max_label = str(&env, &"a".repeat(128));
@@ -1081,7 +1106,7 @@ fn test_label_max_length_accepted() {
 #[test]
 #[should_panic(expected = "Error(Contract, #7)")]
 fn test_label_at_soroban_max_rejected_by_app_guard() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let label = str_repeat(&env, 'a', 8192);
@@ -1092,7 +1117,7 @@ fn test_label_at_soroban_max_rejected_by_app_guard() {
 #[test]
 #[should_panic(expected = "Error(Contract, #7)")]
 fn test_label_one_below_soroban_max_rejected_by_app_guard() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let label = str_repeat(&env, 'b', 8191);
@@ -1102,7 +1127,7 @@ fn test_label_one_below_soroban_max_rejected_by_app_guard() {
 // 20. A Soroban String of exactly 8 192 bytes can be constructed without panicking.
 #[test]
 fn test_soroban_string_8192_bytes_is_constructible() {
-    let (env, _client) = setup();
+    let (env, _admin, _client) = setup();
     let s = str_repeat(&env, 'x', 8192);
     assert_eq!(s.len(), 8192);
 }
@@ -1112,7 +1137,7 @@ fn test_soroban_string_8192_bytes_is_constructible() {
 // renew_alert_ttl — happy path: owner can renew without changing data
 #[test]
 fn test_renew_alert_ttl_happy_path() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1146,7 +1171,7 @@ fn test_renew_alert_ttl_happy_path() {
 // renew_alert_ttl emits a renew event
 #[test]
 fn test_renew_alert_ttl_emits_event() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1166,7 +1191,7 @@ fn test_renew_alert_ttl_emits_event() {
 // renew_alert_ttl — unauthorized caller is rejected
 #[test]
 fn test_renew_alert_ttl_unauthorized() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let attacker = Address::generate(&env);
     let target = Address::generate(&env);
@@ -1191,7 +1216,7 @@ fn test_renew_alert_ttl_unauthorized() {
 // renew_alert_ttl — nonexistent alert returns AlertNotFound
 #[test]
 fn test_renew_alert_ttl_not_found() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let caller = Address::generate(&env);
 
     assert_eq!(
@@ -1208,7 +1233,7 @@ fn test_renew_alert_ttl_not_found() {
 // propose_webhook — happy path: pending hash is stored, live hash unchanged
 #[test]
 fn test_propose_webhook_stores_pending_hash() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1237,7 +1262,7 @@ fn test_propose_webhook_stores_pending_hash() {
 // confirm_webhook — happy path: pending hash is promoted to live hash
 #[test]
 fn test_confirm_webhook_promotes_pending_hash() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1263,7 +1288,7 @@ fn test_confirm_webhook_promotes_pending_hash() {
 // confirm_webhook — returns NoPendingWebhook when no rotation is in progress
 #[test]
 fn test_confirm_webhook_no_pending_returns_error() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1287,7 +1312,7 @@ fn test_confirm_webhook_no_pending_returns_error() {
 // propose_webhook — unauthorized caller is rejected
 #[test]
 fn test_propose_webhook_unauthorized() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let attacker = Address::generate(&env);
     let target = Address::generate(&env);
@@ -1312,7 +1337,7 @@ fn test_propose_webhook_unauthorized() {
 // confirm_webhook — unauthorized caller is rejected
 #[test]
 fn test_confirm_webhook_unauthorized() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let attacker = Address::generate(&env);
     let target = Address::generate(&env);
@@ -1339,7 +1364,7 @@ fn test_confirm_webhook_unauthorized() {
 // propose_webhook — nonexistent alert returns AlertNotFound
 #[test]
 fn test_propose_webhook_not_found() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let caller = Address::generate(&env);
 
     assert_eq!(
@@ -1354,7 +1379,7 @@ fn test_propose_webhook_not_found() {
 // confirm_webhook — nonexistent alert returns AlertNotFound
 #[test]
 fn test_confirm_webhook_not_found() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let caller = Address::generate(&env);
 
     assert_eq!(
@@ -1369,7 +1394,7 @@ fn test_confirm_webhook_not_found() {
 // propose_webhook — calling propose twice overwrites the pending hash
 #[test]
 fn test_propose_webhook_overwrites_previous_pending() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1392,7 +1417,7 @@ fn test_propose_webhook_overwrites_previous_pending() {
 
 #[test]
 fn test_propose_webhook_rejects_live_hash_without_event() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let hash = hash64c(&env, 'a');
@@ -1415,7 +1440,7 @@ fn test_propose_webhook_rejects_live_hash_without_event() {
 
 #[test]
 fn test_propose_webhook_rejects_pending_hash_without_event() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let id = client.register_alert(
@@ -1442,7 +1467,7 @@ fn test_propose_webhook_rejects_pending_hash_without_event() {
 // Full rotation flow: propose → confirm → propose again → confirm again
 #[test]
 fn test_webhook_rotation_full_cycle() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1472,7 +1497,7 @@ fn test_webhook_rotation_full_cycle() {
 // propose_webhook emits a wh_prop event
 #[test]
 fn test_propose_webhook_emits_event() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1492,7 +1517,7 @@ fn test_propose_webhook_emits_event() {
 // confirm_webhook emits a wh_conf event
 #[test]
 fn test_confirm_webhook_emits_event() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1513,7 +1538,7 @@ fn test_confirm_webhook_emits_event() {
 // update_label emits a label event
 #[test]
 fn test_update_label_emits_event() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1533,7 +1558,7 @@ fn test_update_label_emits_event() {
 // pending_webhook_hash is None on fresh registration
 #[test]
 fn test_pending_webhook_hash_none_on_registration() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1556,7 +1581,7 @@ fn test_pending_webhook_hash_none_on_registration() {
 // 10 entries after all registrations.
 #[test]
 fn test_ten_alerts_same_owner_same_contract() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let webhook_hash = hash64c(&env, 'a');
@@ -1596,7 +1621,7 @@ fn test_deactivate_all_alerts_refreshes_owner_and_contract_index_ttl() {
     use crate::DataKey;
     use soroban_sdk::testutils::storage::Persistent;
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1649,7 +1674,7 @@ fn test_webhook_rotation_refreshes_owner_and_contract_index_ttl() {
     use crate::DataKey;
     use soroban_sdk::testutils::storage::Persistent;
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1709,13 +1734,10 @@ fn test_webhook_rotation_refreshes_owner_and_contract_index_ttl() {
 fn test_set_watcher_registry_emits_event() {
     use watcher_registry::{WatcherRegistry, WatcherRegistryClient};
 
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
 
-    let registry_id = env.register(WatcherRegistry, ());
+    let registry_id = env.register(WatcherRegistry, (&admin,));
     let registry_client = WatcherRegistryClient::new(&env, &registry_id);
-    registry_client.initialize(&admin);
     registry_client.register_watcher(&admin, &admin);
 
     client.set_watcher_registry(&admin, &registry_id);
@@ -1737,14 +1759,11 @@ fn test_set_watcher_registry_emits_event() {
 
 #[test]
 fn test_clear_watcher_registry_emits_disable_event() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
 
-    let registry_id = env.register(watcher_registry::WatcherRegistry, ());
+    let registry_id = env.register(watcher_registry::WatcherRegistry, (&admin,));
     let registry_client =
         watcher_registry::WatcherRegistryClient::new(&env, &registry_id);
-    registry_client.initialize(&admin);
     client.set_watcher_registry(&admin, &registry_id);
     client.clear_watcher_registry(&admin);
 
@@ -1773,12 +1792,10 @@ fn test_is_watcher_gating_enabled_default_false() {
 
 #[test]
 fn test_per_owner_limit_exact_boundary() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
+    let (env, admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
-    client.initialize(&admin);
     client.set_per_owner_alert_limit(&admin, &2u32);
     assert_eq!(client.get_per_owner_alert_limit(), 2u32);
 
@@ -1832,7 +1849,7 @@ fn test_per_owner_limit_exact_boundary() {
 
 #[test]
 fn test_validate_rule_mint_and_invalid_descriptors() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1879,7 +1896,7 @@ fn test_validate_rule_mint_and_invalid_descriptors() {
 
 #[test]
 fn test_duplicate_rules_rejected() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -1937,7 +1954,7 @@ fn test_duplicate_rules_rejected() {
 
 #[test]
 fn test_update_target_contract_moves_indices() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target_a = Address::generate(&env);
     let target_b = Address::generate(&env);
@@ -2027,7 +2044,7 @@ fn test_get_active_contract_alerts_paged() {
 
 #[test]
 fn test_update_target_contract_emits_event() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target_a = Address::generate(&env);
     let target_b = Address::generate(&env);
@@ -2047,7 +2064,7 @@ fn test_update_target_contract_emits_event() {
 
 #[test]
 fn test_get_alert_active_states_and_counts() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -2075,7 +2092,7 @@ fn test_get_alert_active_states_and_counts() {
 
 #[test]
 fn test_deactivate_all_alerts_precise_behavior() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner1 = Address::generate(&env);
     let owner2 = Address::generate(&env);
     let target = Address::generate(&env);
@@ -2127,7 +2144,7 @@ fn test_deactivate_all_alerts_precise_behavior() {
 
 #[test]
 fn test_get_alerts_modified_since_precision() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -2177,7 +2194,7 @@ fn test_get_alerts_modified_since_precision() {
 
 #[test]
 fn test_get_alerts_modified_since_ledger_precision() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -2292,9 +2309,7 @@ fn test_get_alerts_modified_since_ledger_precision() {
 
 #[test]
 fn test_updated_ledger_tracked_on_all_mutations() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
 
     let owner = Address::generate(&env);
     let new_owner = Address::generate(&env);
@@ -2373,7 +2388,7 @@ fn test_updated_ledger_tracked_on_all_mutations() {
 
 #[test]
 fn test_configs_paginated_boundaries() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let querier = Address::generate(&env);
@@ -2407,7 +2422,7 @@ fn test_configs_paginated_boundaries() {
 
 #[test]
 fn test_paginated_queries_cap_unbounded_limits() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -2443,7 +2458,7 @@ fn test_paginated_queries_cap_unbounded_limits() {
 
 #[test]
 fn test_alert_transfer_success() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let new_owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -2472,7 +2487,7 @@ fn test_alert_transfer_success() {
 
 #[test]
 fn test_alert_transfer_unauthorized() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let attacker = Address::generate(&env);
     let new_owner = Address::generate(&env);
@@ -2501,7 +2516,7 @@ fn test_alert_transfer_unauthorized() {
 
 #[test]
 fn test_alert_transfer_not_found() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let caller = Address::generate(&env);
     let new_owner = Address::generate(&env);
 
@@ -2516,7 +2531,7 @@ fn test_alert_transfer_not_found() {
 
 #[test]
 fn test_alert_transfer_emits_event() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let new_owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -2539,9 +2554,7 @@ fn test_alert_transfer_emits_event() {
 
 #[test]
 fn test_deactivate_alert_by_admin_success() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
 
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -2563,10 +2576,8 @@ fn test_deactivate_alert_by_admin_success() {
 
 #[test]
 fn test_deactivate_alert_by_admin_unauthorized() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
+    let (env, admin, client) = setup();
     let attacker = Address::generate(&env);
-    client.initialize(&admin);
 
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -2591,9 +2602,7 @@ fn test_deactivate_alert_by_admin_unauthorized() {
 
 #[test]
 fn test_deactivate_alert_by_admin_not_found() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
 
     assert_eq!(
         client
@@ -2606,9 +2615,7 @@ fn test_deactivate_alert_by_admin_not_found() {
 
 #[test]
 fn test_deactivate_alert_by_admin_emits_event() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
 
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -2622,6 +2629,48 @@ fn test_deactivate_alert_by_admin_emits_event() {
 
     client.deactivate_alert_by_admin(&admin, &id);
     assert!(!env.events().all().is_empty());
+}
+
+#[test]
+fn test_deactivate_alert_by_admin_is_idempotent() {
+    let (env, client) = setup();
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let owner = Address::generate(&env);
+    let target = Address::generate(&env);
+    let id = client.register_alert(
+        &owner,
+        &target,
+        &str(&env, "Alert"),
+        &hash64(&env),
+        &vec![&env],
+    );
+
+    env.ledger().with_mut(|li| {
+        li.timestamp = 1_000;
+        li.sequence_number = 10;
+    });
+    client.deactivate_alert_by_admin(&admin, &id);
+    assert!(client.is_alert_suspended(&id));
+    let first = client.get_alert(&owner, &id).unwrap();
+    assert!(!first.active);
+    assert_eq!(first.updated_at, 1_000);
+    assert_eq!(first.updated_ledger, 10);
+    assert_eq!(env.events().all().len(), 1);
+
+    // Re-suspending an already-suspended alert is a no-op without an event.
+    env.ledger().with_mut(|li| {
+        li.timestamp = 2_000;
+        li.sequence_number = 20;
+    });
+    client.deactivate_alert_by_admin(&admin, &id);
+    assert!(client.is_alert_suspended(&id));
+    let second = client.get_alert(&owner, &id).unwrap();
+    assert!(!second.active);
+    assert_eq!(second.updated_at, 1_000);
+    assert_eq!(second.updated_ledger, 10);
+    assert!(env.events().all().is_empty());
 }
 
 // ── Issue #37 — batch_register_alert / batch_remove_alert ───────────────
@@ -2638,7 +2687,7 @@ fn alert_input(env: &Env, owner: &Address, target: &Address, label: &str) -> Ale
 
 #[test]
 fn test_batch_register_alert_single() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -2652,7 +2701,7 @@ fn test_batch_register_alert_single() {
 
 #[test]
 fn test_batch_register_alert_five() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -2669,7 +2718,7 @@ fn test_batch_register_alert_five() {
 
 #[test]
 fn test_batch_register_alert_boundary_size() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -2686,7 +2735,7 @@ fn test_batch_register_alert_boundary_size() {
 
 #[test]
 fn test_batch_register_alert_rolls_back_on_validation_error() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -2716,7 +2765,7 @@ fn test_batch_register_alert_rolls_back_on_validation_error() {
 
 #[test]
 fn test_batch_remove_alert_single() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -2734,7 +2783,7 @@ fn test_batch_remove_alert_single() {
 
 #[test]
 fn test_batch_remove_alert_five() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -2759,7 +2808,7 @@ fn test_batch_remove_alert_five() {
 
 #[test]
 fn test_batch_remove_alert_boundary_size() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -2781,7 +2830,7 @@ fn test_batch_remove_alert_boundary_size() {
 
 #[test]
 fn test_batch_remove_alert_unauthorized_rolls_back() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let attacker = Address::generate(&env);
     let target = Address::generate(&env);
@@ -2816,7 +2865,7 @@ fn test_batch_remove_alert_unauthorized_rolls_back() {
 
 #[test]
 fn test_batch_remove_alert_not_found() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
 
     assert_eq!(
@@ -2835,7 +2884,7 @@ fn test_batch_register_alert_with_real_auth_trees_multi_owner() {
     use soroban_sdk::testutils::MockAuth;
 
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
 
     let owner_a = Address::generate(&env);
@@ -2887,7 +2936,7 @@ fn test_batch_register_alert_with_real_auth_trees_repeated_owner() {
     use soroban_sdk::testutils::MockAuth;
 
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
 
     let owner = Address::generate(&env);
@@ -2931,7 +2980,7 @@ fn test_batch_register_alert_with_real_auth_trees_repeated_owner() {
 
 #[test]
 fn test_batch_remove_alert_ignores_duplicate_ids() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let id = client.register_alert(
@@ -2951,6 +3000,7 @@ fn test_batch_remove_alert_ignores_duplicate_ids() {
 
 fn setup_with_watcher_registry() -> (
     Env,
+    Address,
     AlertRegistryClient<'static>,
     watcher_registry::WatcherRegistryClient<'static>,
 ) {
@@ -2958,13 +3008,14 @@ fn setup_with_watcher_registry() -> (
     let env = Env::default();
     env.mock_all_auths();
 
-    let alert_id = env.register(AlertRegistry, ());
-    let watcher_id = env.register(WatcherRegistry, ());
+    let admin = Address::generate(&env);
+    let alert_id = env.register(AlertRegistry, (&admin,));
+    let watcher_id = env.register(WatcherRegistry, (&admin,));
 
     let alert_client = AlertRegistryClient::new(&env, &alert_id);
     let watcher_client = watcher_registry::WatcherRegistryClient::new(&env, &watcher_id);
 
-    (env, alert_client, watcher_client)
+    (env, admin, alert_client, watcher_client)
 }
 
 #[test]
@@ -2977,9 +3028,7 @@ fn test_global_alert_limit_defaults_to_zero_unlimited() {
 fn test_set_global_alert_limit_emits_admin_limit_event() {
     use soroban_sdk::{symbol_short, testutils::Events as _};
 
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     client.set_global_alert_limit(&admin, &11u32);
 
     let event = env
@@ -3004,9 +3053,7 @@ fn test_set_global_alert_limit_emits_admin_limit_event() {
 #[test]
 #[should_panic(expected = "Error(Contract, #13)")]
 fn test_global_alert_limit_enforced_across_owners() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     client.set_global_alert_limit(&admin, &2u32);
 
     let target = Address::generate(&env);
@@ -3038,9 +3085,7 @@ fn test_global_alert_limit_enforced_across_owners() {
 
 #[test]
 fn test_global_alert_limit_is_released_by_removal() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     client.set_global_alert_limit(&admin, &1u32);
 
     let owner = Address::generate(&env);
@@ -3068,21 +3113,18 @@ fn test_global_alert_limit_is_released_by_removal() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_set_global_alert_limit_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
-    let client = AlertRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(AlertRegistry, (&admin,));
+    let client = AlertRegistryClient::new(&env, &contract_id);
     env.mock_all_auths();
-    client.initialize(&admin);
     env.set_auths(&[]);
     client.set_global_alert_limit(&admin, &5u32);
 }
 
 #[test]
 fn test_set_global_alert_limit_non_admin_rejected() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
+    let (env, admin, client) = setup();
     let attacker = Address::generate(&env);
-    client.initialize(&admin);
 
     assert_eq!(
         client
@@ -3102,9 +3144,7 @@ fn test_per_contract_alert_limit_defaults_to_zero_unlimited() {
 #[test]
 #[should_panic(expected = "Error(Contract, #14)")]
 fn test_per_contract_alert_limit_enforced_across_owners() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     client.set_per_contract_alert_limit(&admin, &2u32);
 
     let target = Address::generate(&env);
@@ -3137,9 +3177,7 @@ fn test_per_contract_alert_limit_enforced_across_owners() {
 
 #[test]
 fn test_per_contract_alert_limit_independent_per_contract() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     client.set_per_contract_alert_limit(&admin, &1u32);
 
     let target_a = Address::generate(&env);
@@ -3169,9 +3207,7 @@ fn test_per_contract_alert_limit_independent_per_contract() {
 
 #[test]
 fn test_per_contract_alert_limit_freed_by_removal() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     client.set_per_contract_alert_limit(&admin, &1u32);
 
     let owner = Address::generate(&env);
@@ -3199,7 +3235,7 @@ fn test_per_contract_alert_limit_freed_by_removal() {
 
 #[test]
 fn test_per_contract_alert_count_excludes_deactivated_alerts() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let id = client.register_alert(
@@ -3219,21 +3255,18 @@ fn test_per_contract_alert_count_excludes_deactivated_alerts() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_set_per_contract_alert_limit_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
-    let client = AlertRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(AlertRegistry, (&admin,));
+    let client = AlertRegistryClient::new(&env, &contract_id);
     env.mock_all_auths();
-    client.initialize(&admin);
     env.set_auths(&[]);
     client.set_per_contract_alert_limit(&admin, &5u32);
 }
 
 #[test]
 fn test_set_per_contract_alert_limit_non_admin_rejected() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
+    let (env, admin, client) = setup();
     let attacker = Address::generate(&env);
-    client.initialize(&admin);
 
     assert_eq!(
         client
@@ -3248,9 +3281,7 @@ fn test_set_per_contract_alert_limit_non_admin_rejected() {
 fn test_set_per_contract_alert_limit_emits_admin_limit_event() {
     use soroban_sdk::{symbol_short, testutils::Events as _};
 
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
 
     client.set_per_contract_alert_limit(&admin, &7u32);
 
@@ -3274,9 +3305,7 @@ fn test_set_per_contract_alert_limit_emits_admin_limit_event() {
 
 #[test]
 fn test_old_admin_rejected_after_transfer() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let new_admin = Address::generate(&env);
 
     // first transfer succeeds
@@ -3298,7 +3327,7 @@ fn test_old_admin_rejected_after_transfer() {
 // Issue #49 — get_alert_count is monotonically increasing after multiple register/remove cycles
 #[test]
 fn test_get_alert_count_after_multiple_cycles() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -3338,7 +3367,7 @@ fn test_get_alert_count_after_multiple_cycles() {
 // Issue #68 — get_alerts_by_owner returns empty vec for address with no alerts
 #[test]
 fn test_get_alerts_by_owner_empty() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let querier = Address::generate(&env);
     assert_eq!(client.get_alerts_by_owner(&querier, &owner).len(), 0);
@@ -3347,7 +3376,7 @@ fn test_get_alerts_by_owner_empty() {
 // 8b. get_alert_ids_by_owner — thin ID-only wrapper over the owner index (#35)
 #[test]
 fn test_get_alert_ids_by_owner() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let other = Address::generate(&env);
     let target = Address::generate(&env);
@@ -3380,7 +3409,7 @@ fn test_get_alert_ids_by_owner() {
 
 #[test]
 fn test_get_alerts_by_ids_preserves_order_and_skips_missing() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let first = client.register_alert(
@@ -3407,7 +3436,7 @@ fn test_get_alerts_by_ids_preserves_order_and_skips_missing() {
 
 #[test]
 fn test_set_alert_active_preserves_rules() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let rules = vec![&env, str(&env, "rule:transfer")];
@@ -3431,7 +3460,7 @@ fn test_set_alert_active_preserves_rules() {
 // 10. Paginated queries work without watcher gating
 #[test]
 fn test_paginated_queries_no_gating() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let querier = Address::generate(&env);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -3452,7 +3481,7 @@ fn test_paginated_queries_no_gating() {
 // 11. No watcher registry configured — any querier can read
 #[test]
 fn test_no_watcher_registry_any_querier_can_read() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let stranger = Address::generate(&env);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -3473,18 +3502,15 @@ fn test_no_watcher_registry_any_querier_can_read() {
 #[test]
 #[cfg(feature = "testutils")]
 fn test_watcher_registry_registered_watcher_can_read() {
-    let (env, alert_client, watcher_client) = setup_with_watcher_registry();
+    let (env, admin, alert_client, watcher_client) = setup_with_watcher_registry();
 
-    let admin = Address::generate(&env);
     let watcher = Address::generate(&env);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
-    watcher_client.initialize(&admin);
     watcher_client.register_watcher(&admin, &watcher);
 
     // Point alert registry at the watcher registry
-    alert_client.initialize(&admin);
     let watcher_contract_id = watcher_client.address.clone();
     alert_client.set_watcher_registry(&admin, &watcher_contract_id);
 
@@ -3505,16 +3531,13 @@ fn test_watcher_registry_registered_watcher_can_read() {
 #[test]
 #[cfg(feature = "testutils")]
 fn test_watcher_registry_unregistered_address_rejected() {
-    let (env, alert_client, watcher_client) = setup_with_watcher_registry();
+    let (env, admin, alert_client, watcher_client) = setup_with_watcher_registry();
 
-    let admin = Address::generate(&env);
     let stranger = Address::generate(&env);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
-    watcher_client.initialize(&admin);
 
-    alert_client.initialize(&admin);
     let watcher_contract_id = watcher_client.address.clone();
     alert_client.set_watcher_registry(&admin, &watcher_contract_id);
 
@@ -3540,17 +3563,14 @@ fn test_watcher_registry_unregistered_address_rejected() {
 #[test]
 #[cfg(feature = "testutils")]
 fn test_watcher_registry_removed_watcher_loses_access() {
-    let (env, alert_client, watcher_client) = setup_with_watcher_registry();
+    let (env, admin, alert_client, watcher_client) = setup_with_watcher_registry();
 
-    let admin = Address::generate(&env);
     let watcher = Address::generate(&env);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
-    watcher_client.initialize(&admin);
     watcher_client.register_watcher(&admin, &watcher);
 
-    alert_client.initialize(&admin);
     let watcher_contract_id = watcher_client.address.clone();
     alert_client.set_watcher_registry(&admin, &watcher_contract_id);
 
@@ -3589,18 +3609,15 @@ fn test_watcher_registry_removed_watcher_loses_access() {
 #[test]
 #[cfg(feature = "testutils")]
 fn test_watcher_registry_get_alert_family_rejects_non_watcher() {
-    let (env, alert_client, watcher_client) = setup_with_watcher_registry();
+    let (env, admin, alert_client, watcher_client) = setup_with_watcher_registry();
 
-    let admin = Address::generate(&env);
     let watcher = Address::generate(&env);
     let stranger = Address::generate(&env);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
-    watcher_client.initialize(&admin);
     watcher_client.register_watcher(&admin, &watcher);
 
-    alert_client.initialize(&admin);
     let watcher_contract_id = watcher_client.address.clone();
     alert_client.set_watcher_registry(&admin, &watcher_contract_id);
 
@@ -3656,9 +3673,7 @@ fn test_get_watcher_registry_none_before_set() {
 
 #[test]
 fn test_get_configuration_returns_all_settings() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     client.set_per_owner_alert_limit(&admin, &11u32);
     client.set_per_contract_alert_limit(&admin, &22u32);
     client.set_global_alert_limit(&admin, &33u32);
@@ -3677,10 +3692,8 @@ fn test_get_configuration_returns_all_settings() {
 #[test]
 #[cfg(feature = "testutils")]
 fn test_set_and_get_watcher_registry() {
-    let (env, alert_client, watcher_client) = setup_with_watcher_registry();
+    let (env, admin, alert_client, watcher_client) = setup_with_watcher_registry();
 
-    let admin = Address::generate(&env);
-    alert_client.initialize(&admin);
 
     let watcher_contract_id = watcher_client.address.clone();
     alert_client.set_watcher_registry(&admin, &watcher_contract_id);
@@ -3696,11 +3709,9 @@ fn test_set_and_get_watcher_registry() {
 #[test]
 #[cfg(feature = "testutils")]
 fn test_is_watcher_gating_enabled() {
-    let (env, alert_client, watcher_client) = setup_with_watcher_registry();
+    let (env, admin, alert_client, watcher_client) = setup_with_watcher_registry();
     assert!(!alert_client.is_watcher_gating_enabled());
 
-    let admin = Address::generate(&env);
-    alert_client.initialize(&admin);
 
     let watcher_contract_id = watcher_client.address.clone();
     alert_client.set_watcher_registry(&admin, &watcher_contract_id);
@@ -3711,12 +3722,10 @@ fn test_is_watcher_gating_enabled() {
 // 17. Only admin can set watcher registry
 #[test]
 fn test_set_watcher_registry_non_admin_rejected() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
+    let (env, admin, client) = setup();
     let attacker = Address::generate(&env);
     let fake_registry = Address::generate(&env);
 
-    client.initialize(&admin);
 
     assert_eq!(
         client
@@ -3731,13 +3740,11 @@ fn test_set_watcher_registry_non_admin_rejected() {
 // doesn't implement the WatcherRegistry interface (#44)
 #[test]
 fn test_set_watcher_registry_rejects_invalid_contract() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
 
     // A real, deployed contract — but not a WatcherRegistry, so it has
     // no `is_watcher_authorized` entry point for the probe to find.
-    let not_a_watcher_registry = env.register(AlertRegistry, ());
+    let not_a_watcher_registry = env.register(AlertRegistry, (&Address::generate(&env),));
 
     assert_eq!(
         client
@@ -3754,9 +3761,7 @@ fn test_set_watcher_registry_rejects_invalid_contract() {
 // 17c. set_watcher_registry rejects a plain (non-contract) address (#44)
 #[test]
 fn test_set_watcher_registry_rejects_non_contract_address() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
 
     let not_a_contract = Address::generate(&env);
 
@@ -3774,11 +3779,9 @@ fn test_set_watcher_registry_rejects_non_contract_address() {
 #[test]
 #[cfg(feature = "testutils")]
 fn test_set_watcher_registry_recovers_after_invalid_attempt() {
-    let (env, alert_client, watcher_client) = setup_with_watcher_registry();
-    let admin = Address::generate(&env);
-    alert_client.initialize(&admin);
+    let (env, admin, alert_client, watcher_client) = setup_with_watcher_registry();
 
-    let bogus = env.register(AlertRegistry, ());
+    let bogus = env.register(AlertRegistry, (&Address::generate(&env),));
     assert_eq!(
         alert_client
             .try_set_watcher_registry(&admin, &bogus)
@@ -3802,18 +3805,15 @@ fn test_set_watcher_registry_recovers_after_invalid_attempt() {
 #[test]
 #[cfg(feature = "testutils")]
 fn test_clear_watcher_registry_disables_then_reconfigure() {
-    let (env, alert_client, watcher_client) = setup_with_watcher_registry();
+    let (env, admin, alert_client, watcher_client) = setup_with_watcher_registry();
 
-    let admin = Address::generate(&env);
     let watcher = Address::generate(&env);
     let stranger = Address::generate(&env);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
-    watcher_client.initialize(&admin);
     watcher_client.register_watcher(&admin, &watcher);
 
-    alert_client.initialize(&admin);
     let watcher_contract_id = watcher_client.address.clone();
     alert_client.set_watcher_registry(&admin, &watcher_contract_id);
     assert!(alert_client.is_watcher_gating_enabled());
@@ -3869,10 +3869,8 @@ fn test_clear_watcher_registry_disables_then_reconfigure() {
 // 17c. clear_watcher_registry rejects non-admin callers.
 #[test]
 fn test_clear_watcher_registry_non_admin_rejected() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
+    let (env, admin, client) = setup();
     let attacker = Address::generate(&env);
-    client.initialize(&admin);
 
     assert_eq!(
         client
@@ -3886,7 +3884,7 @@ fn test_clear_watcher_registry_non_admin_rejected() {
 // 17d. clear_watcher_registry requires the contract to be initialized.
 #[test]
 fn test_clear_watcher_registry_not_initialized() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let admin = Address::generate(&env);
 
     assert_eq!(
@@ -3907,7 +3905,7 @@ fn test_clear_watcher_registry_not_initialized() {
 // value that is strictly greater than the one captured at registration.
 #[test]
 fn test_updated_at_strictly_greater_than_created_at() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -3950,7 +3948,7 @@ fn test_updated_at_strictly_greater_than_created_at() {
 // all 50 slots, then confirm every entry is stored correctly.
 #[test]
 fn test_register_alert_with_50_rules_no_instruction_limit() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -3989,7 +3987,7 @@ fn test_register_alert_with_50_rules_no_instruction_limit() {
 // 18. Happy path — update_label changes only the label
 #[test]
 fn test_update_label_changes_label() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4019,7 +4017,7 @@ fn test_update_label_changes_label() {
 // 19. update_label — unauthorized caller is rejected
 #[test]
 fn test_update_label_unauthorized() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let attacker = Address::generate(&env);
     let target = Address::generate(&env);
@@ -4044,7 +4042,7 @@ fn test_update_label_unauthorized() {
 // 20. update_label — nonexistent alert returns AlertNotFound
 #[test]
 fn test_update_label_not_found() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let caller = Address::generate(&env);
 
     assert_eq!(
@@ -4058,7 +4056,7 @@ fn test_update_label_not_found() {
 
 #[test]
 fn test_register_alert_rejects_empty_label() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4079,7 +4077,7 @@ fn test_register_alert_rejects_empty_label() {
 
 #[test]
 fn test_update_label_rejects_empty_label() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let id = client.register_alert(
@@ -4103,7 +4101,7 @@ fn test_update_label_rejects_empty_label() {
 #[test]
 #[should_panic(expected = "Error(Contract, #7)")]
 fn test_update_label_too_long() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4121,7 +4119,7 @@ fn test_update_label_too_long() {
 // 22. update_label — exactly 128 bytes is accepted
 #[test]
 fn test_update_label_max_length_accepted() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4146,7 +4144,7 @@ fn test_update_label_max_length_accepted() {
 // 23. Happy path — only active alerts are returned
 #[test]
 fn test_get_active_alerts_for_contract_filters_inactive() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4180,7 +4178,7 @@ fn test_get_active_alerts_for_contract_filters_inactive() {
 // 24. get_active_alerts_for_contract — returns empty when all are inactive
 #[test]
 fn test_get_active_alerts_for_contract_all_inactive() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4201,7 +4199,7 @@ fn test_get_active_alerts_for_contract_all_inactive() {
 // 25. get_active_alerts_for_contract — returns empty for unknown contract
 #[test]
 fn test_get_active_alerts_for_contract_empty() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let target = Address::generate(&env);
     assert_eq!(
         client
@@ -4214,7 +4212,7 @@ fn test_get_active_alerts_for_contract_empty() {
 // 26. get_active_alerts_for_contract — all active alerts are returned
 #[test]
 fn test_get_active_alerts_for_contract_all_active() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4240,9 +4238,7 @@ fn test_get_active_alerts_for_contract_all_active() {
 // 18. transfer_admin emits an ("admin", "transfer") event
 #[test]
 fn test_transfer_admin_emits_event() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let new_admin = Address::generate(&env);
 
     client.transfer_admin(&admin, &new_admin);
@@ -4254,9 +4250,7 @@ fn test_transfer_admin_emits_event() {
 // 19. old admin cannot act after transfer_admin
 #[test]
 fn test_old_admin_rejected_for_remove_alert_by_admin() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let new_admin = Address::generate(&env);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -4286,7 +4280,7 @@ fn test_old_admin_rejected_for_remove_alert_by_admin() {
 // 18. Returns all alerts when since == 0
 #[test]
 fn test_get_alerts_modified_since_zero_returns_all() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4308,7 +4302,7 @@ fn test_get_alerts_modified_since_empty_registry() {
 // 20. Filters out alerts whose updated_at is before `since`
 #[test]
 fn test_get_alerts_modified_since_filters_old_alerts() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4341,7 +4335,7 @@ fn test_get_alerts_modified_since_filters_old_alerts() {
 // 21. An updated alert appears in a subsequent incremental sync
 #[test]
 fn test_get_alerts_modified_since_includes_updated_alert() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4364,7 +4358,7 @@ fn test_get_alerts_modified_since_includes_updated_alert() {
 // 22. Removed alerts are not returned
 #[test]
 fn test_get_alerts_modified_since_excludes_removed_alerts() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4383,7 +4377,7 @@ fn test_get_alerts_modified_since_excludes_removed_alerts() {
 // 23. since is exclusive of nothing — boundary value exactly equal is included
 #[test]
 fn test_get_alerts_modified_since_boundary_inclusive() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4411,7 +4405,7 @@ fn test_get_alerts_modified_since_boundary_inclusive() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_register_alert_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -4422,7 +4416,7 @@ fn test_register_alert_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_update_alert_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -4443,7 +4437,7 @@ fn test_update_alert_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_update_webhook_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -4458,7 +4452,7 @@ fn test_update_webhook_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_remove_alert_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -4473,11 +4467,10 @@ fn test_remove_alert_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_transfer_admin_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
-    let client = AlertRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(AlertRegistry, (&admin,));
+    let client = AlertRegistryClient::new(&env, &contract_id);
     env.mock_all_auths();
-    client.initialize(&admin);
     let new_admin = Address::generate(&env);
     env.set_auths(&[]);
     client.transfer_admin(&admin, &new_admin);
@@ -4487,11 +4480,10 @@ fn test_transfer_admin_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_set_per_owner_alert_limit_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
-    let client = AlertRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(AlertRegistry, (&admin,));
+    let client = AlertRegistryClient::new(&env, &contract_id);
     env.mock_all_auths();
-    client.initialize(&admin);
     env.set_auths(&[]);
     client.set_per_owner_alert_limit(&admin, &5u32);
 }
@@ -4500,13 +4492,12 @@ fn test_set_per_owner_alert_limit_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_remove_alert_by_admin_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
-    let client = AlertRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(AlertRegistry, (&admin,));
+    let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     env.mock_all_auths();
-    client.initialize(&admin);
     let id = client.register_alert(
         &owner,
         &target,
@@ -4522,11 +4513,10 @@ fn test_remove_alert_by_admin_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_set_watcher_registry_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
-    let client = AlertRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(AlertRegistry, (&admin,));
+    let client = AlertRegistryClient::new(&env, &contract_id);
     env.mock_all_auths();
-    client.initialize(&admin);
     let watcher_registry = Address::generate(&env);
     env.set_auths(&[]);
     client.set_watcher_registry(&admin, &watcher_registry);
@@ -4536,7 +4526,7 @@ fn test_set_watcher_registry_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_propose_webhook_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -4551,7 +4541,7 @@ fn test_propose_webhook_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_confirm_webhook_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -4567,7 +4557,7 @@ fn test_confirm_webhook_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_renew_alert_ttl_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -4582,7 +4572,7 @@ fn test_renew_alert_ttl_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_update_label_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -4597,7 +4587,7 @@ fn test_update_label_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_deactivate_all_alerts_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -4611,7 +4601,7 @@ fn test_deactivate_all_alerts_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_update_target_contract_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -4632,7 +4622,7 @@ fn test_update_target_contract_requires_auth() {
 fn test_load_get_alerts_modified_since_instruction_cost() {
     const N: usize = 50;
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let hash = hash64(&env);
@@ -4672,7 +4662,7 @@ fn test_get_alerts_modified_since_pagination_bounds_scan_cost() {
     const N: u32 = 400;
     const PAGE: u32 = 10;
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let hash = hash64(&env);
@@ -4723,9 +4713,7 @@ fn test_get_alerts_modified_since_pagination_bounds_scan_cost() {
 fn test_load_assert_per_owner_limit_instruction_cost() {
     const LIMIT: u32 = 100;
 
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     client.set_per_owner_alert_limit(&admin, &LIMIT);
 
     let owner = Address::generate(&env);
@@ -4782,7 +4770,7 @@ fn test_load_assert_per_owner_limit_instruction_cost() {
 fn test_get_non_removed_alert_count_instruction_cost_is_constant() {
     const N: u32 = 200;
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let hash = hash64(&env);
@@ -4811,7 +4799,7 @@ fn test_get_non_removed_alert_count_instruction_cost_is_constant() {
 fn test_id_monotonicity() {
     const N: u64 = 10;
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
 
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -4842,7 +4830,7 @@ fn test_id_monotonicity() {
 // #33 — update_target_contract moves the alert to a new contract index
 #[test]
 fn test_update_target_contract() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let old_target = Address::generate(&env);
     let new_target = Address::generate(&env);
@@ -4869,7 +4857,7 @@ fn test_update_target_contract() {
 // #33 — update_target_contract unauthorized
 #[test]
 fn test_update_target_contract_unauthorized() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let attacker = Address::generate(&env);
     let target = Address::generate(&env);
@@ -4895,7 +4883,7 @@ fn test_update_target_contract_unauthorized() {
 // 18. update_alert after remove_alert returns AlertNotFound
 #[test]
 fn test_update_alert_after_remove_returns_not_found() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4921,7 +4909,7 @@ fn test_update_alert_after_remove_returns_not_found() {
 // 19. update_webhook after remove_alert returns AlertNotFound
 #[test]
 fn test_update_webhook_after_remove_returns_not_found() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4947,7 +4935,7 @@ fn test_update_webhook_after_remove_returns_not_found() {
 // 18. get_alert_active returns None for nonexistent ID
 #[test]
 fn test_get_alert_active_nonexistent() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     assert!(client
         .get_alert_active(&Address::generate(&env), &999u64)
         .is_none());
@@ -4956,7 +4944,7 @@ fn test_get_alert_active_nonexistent() {
 // 19. get_alert_active returns true after registration
 #[test]
 fn test_get_alert_active_after_register() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4974,7 +4962,7 @@ fn test_get_alert_active_after_register() {
 // 20. get_alert_active reflects update_alert changes
 #[test]
 fn test_get_alert_active_after_update() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -4998,7 +4986,7 @@ fn test_get_alert_active_after_update() {
 // 21. get_alert_active returns None after removal
 #[test]
 fn test_get_alert_active_after_remove() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5018,7 +5006,7 @@ fn test_get_alert_active_after_remove() {
 // 21a. get_alert_owner returns the owner after registration
 #[test]
 fn test_get_alert_owner_after_register() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5039,7 +5027,7 @@ fn test_get_alert_owner_after_register() {
 // 21b. get_alert_owner reflects an accepted ownership transfer
 #[test]
 fn test_get_alert_owner_after_transfer() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let new_owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -5064,7 +5052,7 @@ fn test_get_alert_owner_after_transfer() {
 // 21c. get_alert_owner returns None for nonexistent ID
 #[test]
 fn test_get_alert_owner_nonexistent() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     assert!(client
         .get_alert_owner(&Address::generate(&env), &999u64)
         .is_none());
@@ -5073,7 +5061,7 @@ fn test_get_alert_owner_nonexistent() {
 // 22. deactivate_all_alerts returns 0 when owner has no alerts
 #[test]
 fn test_deactivate_all_alerts_empty() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
 
     assert_eq!(client.deactivate_all_alerts(&owner), 0);
@@ -5082,7 +5070,7 @@ fn test_deactivate_all_alerts_empty() {
 // 23. deactivate_all_alerts deactivates all alerts for the owner
 #[test]
 fn test_deactivate_all_alerts_multiple() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5122,7 +5110,7 @@ fn test_deactivate_all_alerts_multiple() {
 
 #[test]
 fn test_deactivate_all_alerts_is_bounded_and_resumable() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5148,7 +5136,7 @@ fn test_deactivate_all_alerts_is_bounded_and_resumable() {
 // 24. deactivate_all_alerts only affects the calling owner's alerts
 #[test]
 fn test_deactivate_all_alerts_other_owner_unaffected() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner1 = Address::generate(&env);
     let owner2 = Address::generate(&env);
     let target = Address::generate(&env);
@@ -5178,7 +5166,7 @@ fn test_deactivate_all_alerts_other_owner_unaffected() {
 // 25. deactivate_all_alerts skips removed alerts and deactivates remaining
 #[test]
 fn test_deactivate_all_alerts_after_removal() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5211,7 +5199,7 @@ fn test_deactivate_all_alerts_after_removal() {
 // 18. get_alerts_by_owner_paginated — basic pagination
 #[test]
 fn test_get_alerts_by_owner_paginated() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5241,7 +5229,7 @@ fn test_get_alerts_by_owner_paginated() {
 // 19. get_contract_alerts_paginated — basic pagination
 #[test]
 fn test_get_contract_alerts_paginated() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5266,7 +5254,7 @@ fn test_get_contract_alerts_paginated() {
 #[should_panic(expected = "Error(Contract, #4)")]
 fn test_get_admin_not_initialized() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     client.get_admin();
 }
@@ -5275,7 +5263,7 @@ fn test_get_admin_not_initialized() {
 #[test]
 fn test_try_get_admin_uninitialized() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
 
     assert_eq!(
@@ -5287,9 +5275,7 @@ fn test_try_get_admin_uninitialized() {
 // 18c. get_admin returns Ok(admin) once initialized
 #[test]
 fn test_try_get_admin_after_initialize() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
 
     assert_eq!(client.try_get_admin().unwrap().unwrap(), admin);
     assert_eq!(client.get_admin(), admin);
@@ -5298,7 +5284,7 @@ fn test_try_get_admin_after_initialize() {
 // 19. Alert can be deactivated and reactivated via update_alert
 #[test]
 fn test_alert_deactivate_reactivate() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5334,7 +5320,7 @@ fn test_alert_deactivate_reactivate() {
 // 18. update_webhook advances updated_at beyond its value at registration
 #[test]
 fn test_update_webhook_updates_timestamp() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5356,7 +5342,7 @@ fn test_update_webhook_updates_timestamp() {
 // 19. Multiple owners watching the same contract — indexes are isolated per owner
 #[test]
 fn test_multiple_owners_overlapping_target_contract() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner_a = Address::generate(&env);
     let owner_b = Address::generate(&env);
     let target = Address::generate(&env);
@@ -5392,7 +5378,7 @@ fn test_multiple_owners_overlapping_target_contract() {
 // B-1. bump_alert succeeds for an existing alert
 #[test]
 fn test_bump_alert_succeeds() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5425,7 +5411,7 @@ fn test_bump_alert_not_found() {
 fn test_bump_alert_clamps_to_max_ttl() {
     use soroban_sdk::testutils::Events as _;
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5462,7 +5448,7 @@ fn test_bump_alert_clamps_to_max_ttl() {
 fn test_bump_alert_uses_requested_ttl_when_below_max() {
     use soroban_sdk::testutils::Events as _;
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5497,7 +5483,7 @@ fn test_bump_alert_uses_requested_ttl_when_below_max() {
 fn test_bump_alert_event_shape() {
     use soroban_sdk::{symbol_short, testutils::Events as _};
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5532,7 +5518,7 @@ fn test_bump_alert_event_shape() {
 // B-6. bump_alert does not modify the alert's content
 #[test]
 fn test_bump_alert_does_not_modify_content() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5577,18 +5563,15 @@ fn test_ttl_constants() {
 #[test]
 #[cfg(feature = "testutils")]
 fn test_clear_watcher_registry_disables_then_reconfigure() {
-    let (env, alert_client, watcher_client) = setup_with_watcher_registry();
+    let (env, admin, alert_client, watcher_client) = setup_with_watcher_registry();
 
-    let admin = Address::generate(&env);
     let watcher = Address::generate(&env);
     let stranger = Address::generate(&env);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
-    watcher_client.initialize(&admin);
     watcher_client.register_watcher(&admin, &watcher);
 
-    alert_client.initialize(&admin);
     let watcher_contract_id = watcher_client.address.clone();
     alert_client.set_watcher_registry(&admin, &watcher_contract_id);
     assert!(alert_client.is_watcher_gating_enabled());
@@ -5644,10 +5627,8 @@ fn test_clear_watcher_registry_disables_then_reconfigure() {
 // 17c. clear_watcher_registry rejects non-admin callers.
 #[test]
 fn test_clear_watcher_registry_non_admin_rejected() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
+    let (env, admin, client) = setup();
     let attacker = Address::generate(&env);
-    client.initialize(&admin);
 
     assert_eq!(
         client
@@ -5661,7 +5642,7 @@ fn test_clear_watcher_registry_non_admin_rejected() {
 // 17d. clear_watcher_registry requires the contract to be initialized.
 #[test]
 fn test_clear_watcher_registry_not_initialized() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let admin = Address::generate(&env);
 
     assert_eq!(
@@ -5682,7 +5663,7 @@ fn test_clear_watcher_registry_not_initialized() {
 // value that is strictly greater than the one captured at registration.
 #[test]
 fn test_updated_at_strictly_greater_than_created_at() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5725,7 +5706,7 @@ fn test_updated_at_strictly_greater_than_created_at() {
 // all 50 slots, then confirm every entry is stored correctly.
 #[test]
 fn test_register_alert_with_50_rules_no_instruction_limit() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5762,7 +5743,7 @@ fn test_register_alert_with_50_rules_no_instruction_limit() {
 // 18. Happy path — update_label changes only the label
 #[test]
 fn test_update_label_changes_label() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5792,7 +5773,7 @@ fn test_update_label_changes_label() {
 // 19. update_label — unauthorized caller is rejected
 #[test]
 fn test_update_label_unauthorized() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let attacker = Address::generate(&env);
     let target = Address::generate(&env);
@@ -5817,7 +5798,7 @@ fn test_update_label_unauthorized() {
 // 20. update_label — nonexistent alert returns AlertNotFound
 #[test]
 fn test_update_label_not_found() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let caller = Address::generate(&env);
 
     assert_eq!(
@@ -5833,7 +5814,7 @@ fn test_update_label_not_found() {
 #[test]
 #[should_panic(expected = "Error(Contract, #7)")]
 fn test_update_label_too_long() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5851,7 +5832,7 @@ fn test_update_label_too_long() {
 // 22. update_label — exactly 128 bytes is accepted
 #[test]
 fn test_update_label_max_length_accepted() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5874,7 +5855,7 @@ fn test_update_label_max_length_accepted() {
 // 23. Happy path — only active alerts are returned
 #[test]
 fn test_get_active_alerts_for_contract_filters_inactive() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5908,7 +5889,7 @@ fn test_get_active_alerts_for_contract_filters_inactive() {
 // 24. get_active_alerts_for_contract — returns empty when all are inactive
 #[test]
 fn test_get_active_alerts_for_contract_all_inactive() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5929,7 +5910,7 @@ fn test_get_active_alerts_for_contract_all_inactive() {
 // 25. get_active_alerts_for_contract — returns empty for unknown contract
 #[test]
 fn test_get_active_alerts_for_contract_empty() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let target = Address::generate(&env);
     assert_eq!(
         client
@@ -5942,7 +5923,7 @@ fn test_get_active_alerts_for_contract_empty() {
 // 26. get_active_alerts_for_contract — all active alerts are returned
 #[test]
 fn test_get_active_alerts_for_contract_all_active() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -5968,9 +5949,7 @@ fn test_get_active_alerts_for_contract_all_active() {
 // 18. transfer_admin emits an ("admin", "transfer") event
 #[test]
 fn test_transfer_admin_emits_event() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let new_admin = Address::generate(&env);
 
     client.transfer_admin(&admin, &new_admin);
@@ -5982,9 +5961,7 @@ fn test_transfer_admin_emits_event() {
 // 19. old admin cannot act after transfer_admin
 #[test]
 fn test_old_admin_rejected_for_remove_alert_by_admin() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     let new_admin = Address::generate(&env);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -6012,7 +5989,7 @@ fn test_old_admin_rejected_for_remove_alert_by_admin() {
 // 18. Returns all alerts when since == 0
 #[test]
 fn test_get_alerts_modified_since_zero_returns_all() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -6034,7 +6011,7 @@ fn test_get_alerts_modified_since_empty_registry() {
 // 20. Filters out alerts whose updated_at is before `since`
 #[test]
 fn test_get_alerts_modified_since_filters_old_alerts() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -6067,7 +6044,7 @@ fn test_get_alerts_modified_since_filters_old_alerts() {
 // 21. An updated alert appears in a subsequent incremental sync
 #[test]
 fn test_get_alerts_modified_since_includes_updated_alert() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -6090,7 +6067,7 @@ fn test_get_alerts_modified_since_includes_updated_alert() {
 // 22. Removed alerts are not returned
 #[test]
 fn test_get_alerts_modified_since_excludes_removed_alerts() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -6109,7 +6086,7 @@ fn test_get_alerts_modified_since_excludes_removed_alerts() {
 // 23. since is exclusive of nothing — boundary value exactly equal is included
 #[test]
 fn test_get_alerts_modified_since_boundary_inclusive() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -6135,7 +6112,7 @@ fn test_get_alerts_modified_since_boundary_inclusive() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_register_alert_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -6146,7 +6123,7 @@ fn test_register_alert_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_update_alert_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -6167,7 +6144,7 @@ fn test_update_alert_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_update_webhook_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -6182,7 +6159,7 @@ fn test_update_webhook_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_remove_alert_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -6197,11 +6174,10 @@ fn test_remove_alert_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_transfer_admin_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
-    let client = AlertRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(AlertRegistry, (&admin,));
+    let client = AlertRegistryClient::new(&env, &contract_id);
     env.mock_all_auths();
-    client.initialize(&admin);
     let new_admin = Address::generate(&env);
     env.set_auths(&[]);
     client.transfer_admin(&admin, &new_admin);
@@ -6211,11 +6187,10 @@ fn test_transfer_admin_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_set_per_owner_alert_limit_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
-    let client = AlertRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(AlertRegistry, (&admin,));
+    let client = AlertRegistryClient::new(&env, &contract_id);
     env.mock_all_auths();
-    client.initialize(&admin);
     env.set_auths(&[]);
     client.set_per_owner_alert_limit(&admin, &5u32);
 }
@@ -6224,13 +6199,12 @@ fn test_set_per_owner_alert_limit_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_remove_alert_by_admin_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
-    let client = AlertRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(AlertRegistry, (&admin,));
+    let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     env.mock_all_auths();
-    client.initialize(&admin);
     let id = client.register_alert(
         &owner,
         &target,
@@ -6246,11 +6220,10 @@ fn test_remove_alert_by_admin_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_set_watcher_registry_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
-    let client = AlertRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(AlertRegistry, (&admin,));
+    let client = AlertRegistryClient::new(&env, &contract_id);
     env.mock_all_auths();
-    client.initialize(&admin);
     let watcher_registry = Address::generate(&env);
     env.set_auths(&[]);
     client.set_watcher_registry(&admin, &watcher_registry);
@@ -6260,7 +6233,7 @@ fn test_set_watcher_registry_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_propose_webhook_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -6275,7 +6248,7 @@ fn test_propose_webhook_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_confirm_webhook_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -6291,7 +6264,7 @@ fn test_confirm_webhook_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_renew_alert_ttl_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -6306,7 +6279,7 @@ fn test_renew_alert_ttl_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_update_label_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -6321,7 +6294,7 @@ fn test_update_label_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_deactivate_all_alerts_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -6335,7 +6308,7 @@ fn test_deactivate_all_alerts_requires_auth() {
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_update_target_contract_requires_auth() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -6354,7 +6327,7 @@ fn test_update_target_contract_requires_auth() {
 fn test_load_get_alerts_modified_since_instruction_cost() {
     const N: usize = 50;
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let hash = hash64(&env);
@@ -6394,7 +6367,7 @@ fn test_get_alerts_modified_since_pagination_bounds_scan_cost() {
     const N: u32 = 400;
     const PAGE: u32 = 10;
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let hash = hash64(&env);
@@ -6445,9 +6418,7 @@ fn test_get_alerts_modified_since_pagination_bounds_scan_cost() {
 fn test_load_assert_per_owner_limit_instruction_cost() {
     const LIMIT: u32 = 100;
 
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
     client.set_per_owner_alert_limit(&admin, &LIMIT);
 
     let owner = Address::generate(&env);
@@ -6504,7 +6475,7 @@ fn test_load_assert_per_owner_limit_instruction_cost() {
 fn test_get_non_removed_alert_count_instruction_cost_is_constant() {
     const N: u32 = 200;
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
     let hash = hash64(&env);
@@ -6533,7 +6504,7 @@ fn test_get_non_removed_alert_count_instruction_cost_is_constant() {
 fn test_id_monotonicity() {
     const N: u64 = 10;
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
 
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -6564,7 +6535,7 @@ fn test_id_monotonicity() {
 // #33 — update_target_contract moves the alert to a new contract index
 #[test]
 fn test_update_target_contract() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let old_target = Address::generate(&env);
     let new_target = Address::generate(&env);
@@ -6591,7 +6562,7 @@ fn test_update_target_contract() {
 // #33 — update_target_contract unauthorized
 #[test]
 fn test_update_target_contract_unauthorized() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let attacker = Address::generate(&env);
     let target = Address::generate(&env);
@@ -6617,7 +6588,7 @@ fn test_update_target_contract_unauthorized() {
 // 18. update_alert after remove_alert returns AlertNotFound
 #[test]
 fn test_update_alert_after_remove_returns_not_found() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -6643,7 +6614,7 @@ fn test_update_alert_after_remove_returns_not_found() {
 // 19. update_webhook after remove_alert returns AlertNotFound
 #[test]
 fn test_update_webhook_after_remove_returns_not_found() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -6669,7 +6640,7 @@ fn test_update_webhook_after_remove_returns_not_found() {
 // 18. get_alert_active returns None for nonexistent ID
 #[test]
 fn test_get_alert_active_nonexistent() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     assert!(client
         .get_alert_active(&Address::generate(&env), &999u64)
         .is_none());
@@ -6678,7 +6649,7 @@ fn test_get_alert_active_nonexistent() {
 // 19. get_alert_active returns true after registration
 #[test]
 fn test_get_alert_active_after_register() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -6696,7 +6667,7 @@ fn test_get_alert_active_after_register() {
 // 20. get_alert_active reflects update_alert changes
 #[test]
 fn test_get_alert_active_after_update() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -6720,7 +6691,7 @@ fn test_get_alert_active_after_update() {
 // 21. get_alert_active returns None after removal
 #[test]
 fn test_get_alert_active_after_remove() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -6740,7 +6711,7 @@ fn test_get_alert_active_after_remove() {
 // 21a. get_alert_owner returns the owner after registration
 #[test]
 fn test_get_alert_owner_after_register() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -6761,7 +6732,7 @@ fn test_get_alert_owner_after_register() {
 // 21b. get_alert_owner reflects an accepted ownership transfer
 #[test]
 fn test_get_alert_owner_after_transfer() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let new_owner = Address::generate(&env);
     let target = Address::generate(&env);
@@ -6786,7 +6757,7 @@ fn test_get_alert_owner_after_transfer() {
 // 21c. get_alert_owner returns None for nonexistent ID
 #[test]
 fn test_get_alert_owner_nonexistent() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     assert!(client
         .get_alert_owner(&Address::generate(&env), &999u64)
         .is_none());
@@ -6795,7 +6766,7 @@ fn test_get_alert_owner_nonexistent() {
 // 22. deactivate_all_alerts returns 0 when owner has no alerts
 #[test]
 fn test_deactivate_all_alerts_empty() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
 
     assert_eq!(client.deactivate_all_alerts(&owner), 0);
@@ -6804,7 +6775,7 @@ fn test_deactivate_all_alerts_empty() {
 // 23. deactivate_all_alerts deactivates all alerts for the owner
 #[test]
 fn test_deactivate_all_alerts_multiple() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -6845,7 +6816,7 @@ fn test_deactivate_all_alerts_multiple() {
 // 24. deactivate_all_alerts only affects the calling owner's alerts
 #[test]
 fn test_deactivate_all_alerts_other_owner_unaffected() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner1 = Address::generate(&env);
     let owner2 = Address::generate(&env);
     let target = Address::generate(&env);
@@ -6875,7 +6846,7 @@ fn test_deactivate_all_alerts_other_owner_unaffected() {
 // 25. deactivate_all_alerts skips removed alerts and deactivates remaining
 #[test]
 fn test_deactivate_all_alerts_after_removal() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -6908,7 +6879,7 @@ fn test_deactivate_all_alerts_after_removal() {
 // 18. get_alerts_by_owner_paginated — basic pagination
 #[test]
 fn test_get_alerts_by_owner_paginated() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -6938,7 +6909,7 @@ fn test_get_alerts_by_owner_paginated() {
 // 19. get_contract_alerts_paginated — basic pagination
 #[test]
 fn test_get_contract_alerts_paginated() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -6963,7 +6934,7 @@ fn test_get_contract_alerts_paginated() {
 #[should_panic(expected = "Error(Contract, #4)")]
 fn test_get_admin_not_initialized() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
     client.get_admin();
 }
@@ -6972,7 +6943,7 @@ fn test_get_admin_not_initialized() {
 #[test]
 fn test_try_get_admin_uninitialized() {
     let env = Env::default();
-    let contract_id = env.register(AlertRegistry, ());
+    let contract_id = env.register(AlertRegistry, (&Address::generate(&env),));
     let client = AlertRegistryClient::new(&env, &contract_id);
 
     assert_eq!(
@@ -6984,9 +6955,7 @@ fn test_try_get_admin_uninitialized() {
 // 18c. get_admin returns Ok(admin) once initialized
 #[test]
 fn test_try_get_admin_after_initialize() {
-    let (env, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let (env, admin, client) = setup();
 
     assert_eq!(client.try_get_admin().unwrap().unwrap(), admin);
     assert_eq!(client.get_admin(), admin);
@@ -6995,7 +6964,7 @@ fn test_try_get_admin_after_initialize() {
 // 19. Alert can be deactivated and reactivated via update_alert
 #[test]
 fn test_alert_deactivate_reactivate() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -7031,7 +7000,7 @@ fn test_alert_deactivate_reactivate() {
 // 18. update_webhook advances updated_at beyond its value at registration
 #[test]
 fn test_update_webhook_updates_timestamp() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -7053,7 +7022,7 @@ fn test_update_webhook_updates_timestamp() {
 // 19. Multiple owners watching the same contract — indexes are isolated per owner
 #[test]
 fn test_multiple_owners_overlapping_target_contract() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner_a = Address::generate(&env);
     let owner_b = Address::generate(&env);
     let target = Address::generate(&env);
@@ -7087,7 +7056,7 @@ fn test_multiple_owners_overlapping_target_contract() {
 // B-1. bump_alert succeeds for an existing alert
 #[test]
 fn test_bump_alert_succeeds() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -7120,7 +7089,7 @@ fn test_bump_alert_not_found() {
 fn test_bump_alert_clamps_to_max_ttl() {
     use soroban_sdk::testutils::Events as _;
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -7157,7 +7126,7 @@ fn test_bump_alert_clamps_to_max_ttl() {
 fn test_bump_alert_uses_requested_ttl_when_below_max() {
     use soroban_sdk::testutils::Events as _;
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -7192,7 +7161,7 @@ fn test_bump_alert_uses_requested_ttl_when_below_max() {
 fn test_bump_alert_event_shape() {
     use soroban_sdk::{symbol_short, testutils::Events as _};
 
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -7227,7 +7196,7 @@ fn test_bump_alert_event_shape() {
 // B-6. bump_alert does not modify the alert's content
 #[test]
 fn test_bump_alert_does_not_modify_content() {
-    let (env, client) = setup();
+    let (env, _admin, client) = setup();
     let owner = Address::generate(&env);
     let target = Address::generate(&env);
 
@@ -7266,6 +7235,16 @@ fn test_ttl_constants() {
     assert_eq!(MAX_TTL, 535_680);
 }
 
+#[test]
+fn test_legacy_initialize_after_constructor_returns_already_initialized() {
+    let (env, admin, client) = setup();
+    assert_eq!(client.get_admin(), admin);
+    let other = Address::generate(&env);
+    assert_eq!(
+        client.try_initialize(&other).unwrap_err().unwrap(),
+        ContractError::AlreadyInitialized
+    );
+}
 // #375: get_pending_alert_transfer and is_alert_suspended are documented as
 // public metadata and stay callable without a querier while gating is on.
 #[test]

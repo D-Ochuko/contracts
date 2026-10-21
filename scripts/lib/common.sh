@@ -55,10 +55,19 @@ resolve_network() {
       RPC_URL="${MAINNET_RPC_URL:?MAINNET_RPC_URL must be set for mainnet}"
       NETWORK_PASSPHRASE="Public Global Stellar Network ; September 2015"
       ;;
+    local)
+      RPC_URL="http://localhost:8000/soroban-rpc"
+      NETWORK_PASSPHRASE="Standalone Network ; February 2017"
+      ;;
     *)
-      echo "Unsupported network: $NETWORK (use testnet or mainnet)" >&2; exit 1 ;;
+      echo "Unsupported network: $NETWORK (use local, testnet or mainnet)" >&2; exit 1 ;;
   esac
   export RPC_URL NETWORK_PASSPHRASE
+
+  if [[ "$NETWORK" == "local" ]]; then
+    FRIENDBOT_URL="http://localhost:8000/friendbot"
+    export FRIENDBOT_URL
+  fi
 }
 
 # Path of the optimized WASM for a crate name, e.g. alert-registry ->

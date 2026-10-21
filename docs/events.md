@@ -29,6 +29,10 @@ Emitted when a new alert is successfully registered.
 
 ### `alert.update`
 
+Emitted when an alert's rules are changed via `update_alert`. Note that
+`set_alert_active` emits `alert.active` instead — indexers can subscribe to
+`alert.update` to detect rule changes only, and to `alert.active` to detect
+activation toggles without needing to re-fetch the alert.
 Emitted when an alert's rules or active flag are changed via `update_alert`.
 
 | Field | Value |
@@ -54,6 +58,21 @@ the rules are unchanged.
 |---|---|
 | Topic 0 | `Symbol("alert")` |
 | Topic 1 | `Symbol("act_set")` |
+| Data | `(id: u64, owner: Address, active: bool)` |
+
+**Status:** ✅ implemented (`set_alert_active`)
+
+---
+
+### `alert.active`
+
+Emitted when an alert's active flag is toggled via `set_alert_active`. The
+rules are unchanged — only the `active` flag flips.
+
+| Field | Value |
+|---|---|
+| Topic 0 | `Symbol("alert")` |
+| Topic 1 | `Symbol("active")` |
 | Data | `(id: u64, owner: Address, active: bool)` |
 
 **Status:** ✅ implemented (`set_alert_active`)
@@ -222,7 +241,11 @@ Emitted when dangling IDs of expired alerts are removed from an owner's index, b
 |---|---|
 | Topic 0 | `Symbol("alert")` |
 | Topic 1 | `Symbol("pruned")` |
-| Data | `(owner: Address, count: u32)` |
+| Data | `(owner: Address, count: u32, ids: Vec<u64>)` |
+
+`ids` lists the pruned alert IDs, at most `MAX_PRUNE_PER_CALL` (50) per pass.
+
+**Expiry vs. removal.** `alert.remove` means an owner or admin removed the alert, and a `RemovedAlert` tombstone is written for sync clients. `alert.pruned` means the alert's record already expired from storage on its own; no tombstone exists, so indexers and sync clients must treat every ID in `ids` as gone and purge it locally.
 
 **Status:** ✅ implemented (`prune_expired_alerts`)
 
