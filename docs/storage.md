@@ -28,8 +28,10 @@ Every `DataKey` variant and `instance_key` constant the contract reads or writes
 | `DataKey::RemovedAlert(id: u64)` | Persistent | `AlertConfig` | Tombstone holding the last config of a removed alert (`active = false`, `removed = true`, `pending_webhook_hash` cleared), so incremental sync can deliver an inactive record. Written once by `remove_alert` with `TOMBSTONE_TTL`; never rewritten, and not extended by `touch_alert` or `bump_alert` |
 | `DataKey::ContractLiveCount(addr: Address)` | Persistent | `u32` | Running count of live (non-removed) alerts targeting `addr`, maintained alongside `ContractIndex`. Rebuilt from `ContractIndex` if the entry is missing or expired |
 | `DataKey::DeactivationCursor(addr: Address)` | Persistent | `u32` | Next owner-index position to inspect for a resumable `deactivate_all_alerts` sweep. Present only while a sweep is unfinished; removed on completion or when the owner's index changes |
+| `DataKey::AlertExpiry(id: u64)` | Persistent | `Option<u32>` | Optional ledger sequence at which the alert stops being active, set by the owner. Stored under a separate key so `AlertConfig` is not re-encoded. Past-expiry alerts are treated as inactive by the active getters and sync results. Extended by `touch_alert` and removed with the alert |
 | `instance_key::NEXT_ID` (`symbol_short!("NEXT_ID")`) | Instance | `u64` | Monotonic counter used to generate unique alert IDs; also the value returned by `get_alert_count` |
 | `instance_key::ADMIN` (`symbol_short!("ADMIN")`) | Instance | `Address` | Admin address that may pause the contract, remove alerts and set limits |
+| `DataKey::Guardian` | Instance | `Option<Address>` | Optional guardian address set by `set_guardian` (admin only) and read by `get_guardian`. The guardian may call `pause` but never `unpause`; `None` when unset. Shares the instance entry's TTL |
 | `instance_key::PAUSED` (`symbol_short!("PAUSED")`) | Instance | `bool` | Circuit-breaker flag set by `pause` / `unpause`; absent means not paused |
 | `instance_key::LIMIT` (`symbol_short!("LIMIT")`) | Instance | `u32` | Optional per-owner active alert limit (`set_per_owner_alert_limit`) |
 | `instance_key::CLIMIT` (`symbol_short!("CLIMIT")`) | Instance | `u32` | Optional per-contract alert limit (`set_per_contract_alert_limit`) |
@@ -59,7 +61,7 @@ Instance keys are the constants in `alert_registry::instance_key`. Each is the s
 
 All persistent key variants (`Alert`, `AlertActive`, `OwnerIndex`, `OwnerLiveCount`, `ContractIndex`, `ContractLiveCount`) are extended by `DEFAULT_TTL` (**17,280 ledgers**, ≈ 24 hours at 5 s/ledger) on every write that touches them. `DeactivationCursor` and `RemovedAlert` are also written with `DEFAULT_TTL`, but nothing else extends them. `bump_alert` can extend an alert's TTL further, up to `MAX_TTL` (535,680 ledgers, ≈ 31 days).
 
-Every mutator that rewrites an alert goes through `persist_alert`, which writes `Alert(id)` and `AlertActive(id)` and then calls `touch_alert` to extend the alert's full set of entries: `Alert(id)`, `AlertActive(id)`, `OwnerIndex(owner)`, `OwnerLiveCount(owner)`, `ContractIndex(target)`. `renew_alert_ttl` and `bump_alert` call `touch_alert` directly without rewriting data. `OwnerLiveCount(owner)` is only extended when present (it may not yet be migrated from the legacy `OwnerActiveCount` key, or may have expired). See [docs/ttl.md](ttl.md) for the per-function table.
+Every mutator that rewrites an alert goes through `persist_alert`, which writes `Alert(id)` and `AlertActive(id)` and then calls `touch_alert` to extend the alert's full set of entries: `Alert(id)`, `AlertActive(id)`, `OwnerIndex(owner)`, `OwnerLiveCount(owner)`, `ContractIndex(target)`, and `AlertExpiry(id)` when present. `renew_alert_ttl` and `bump_alert` call `touch_alert` directly without rewriting data. `OwnerLiveCount(owner)` is only extended when present (it may not yet be migrated from the legacy `OwnerActiveCount` key, or may have expired). `AlertExpiry(id)` is likewise only extended when present, and is deleted by `remove_alert` along with the alert's other entries. See [docs/ttl.md](ttl.md) for the per-function table.
 
 | Function | Keys Extended |
 |---|---|
@@ -69,11 +71,11 @@ Every mutator that rewrites an alert goes through `persist_alert`, which writes 
 | `update_target_contract` | Full set with the new target's `ContractIndex`; the old target's index is rewritten and extended |
 | `deactivate_all_alerts` | Full set for each deactivated alert |
 | `bump_alert` | Full set, to the requested TTL (capped at `MAX_TTL`) |
-| `remove_alert` | `Alert(id)`, `AlertActive(id)` deleted; `OwnerIndex(owner)`, `OwnerLiveCount(owner)`, `ContractIndex(target)` updated and TTL-extended |
+| `remove_alert` | `Alert(id)`, `AlertActive(id)`, `AlertExpiry(id)` deleted; `OwnerIndex(owner)`, `OwnerLiveCount(owner)`, `ContractIndex(target)` updated and TTL-extended |
 
 Read-only functions (`get_alert`, `get_alerts_for_contract`, `get_alerts_by_owner`, paginated variants, `get_alert_count`) do **not** extend any TTL.
 
-All instance keys (`NEXT_ID`, `LIVE`, `ADMIN`, `PAUSED`, `LIMIT`, `CLIMIT`, `GLIMIT`, `WATCHREG`, `PendingAdminTransfer`) share the contract instance entry's TTL. The contract extends it to `INSTANCE_BUMP_AMOUNT` (535,680 ledgers, ≈ 31 days) whenever it has dropped below `INSTANCE_BUMP_THRESHOLD` (17,280 ledgers) on every write to instance storage: the ID counter and live count in `register_alert`, and every admin setter. The permissionless `bump_instance_ttl` does the same for quiet periods; if the instance entry is archived, the counter, live count, admin and limits (and with them every alert) are unreachable until it is restored. See [docs/ttl.md](ttl.md#keeping-the-alert-registry-instance-alive).
+All instance keys (`NEXT_ID`, `LIVE`, `ADMIN`, `PAUSED`, `LIMIT`, `CLIMIT`, `GLIMIT`, `WATCHREG`, `PendingAdminTransfer`, `Guardian`) share the contract instance entry's TTL. The contract extends it to `INSTANCE_BUMP_AMOUNT` (535,680 ledgers, ≈ 31 days) whenever it has dropped below `INSTANCE_BUMP_THRESHOLD` (17,280 ledgers) on every write to instance storage: the ID counter and live count in `register_alert`, and every admin setter. The permissionless `bump_instance_ttl` does the same for quiet periods; if the instance entry is archived, the counter, live count, admin and limits (and with them every alert) are unreachable until it is restored. See [docs/ttl.md](ttl.md#keeping-the-alert-registry-instance-alive).
 
 > See [docs/ttl.md](ttl.md) for implications of the DEFAULT_TTL setting and recommended production values.
 
@@ -107,8 +109,8 @@ There are no persistent storage entries in WatcherRegistry.
 
 | Contract | Tier | Keys | TTL Managed By |
 |---|---|---|---|
-| AlertRegistry | Persistent | `Alert`, `AlertActive`, `AdminSuspended`, `PendingTransfer`, `OwnerIndex`, `OwnerLiveCount`, `ContractIndex`, `ContractLiveCount`, `DeactivationCursor`, `RemovedAlert` | Contract (`extend_ttl` to `DEFAULT_TTL` = 17,280 ledgers on write; `bump_alert` up to `MAX_TTL`) |
-| AlertRegistry | Instance | `NEXT_ID`, `LIVE`, `ADMIN`, `PAUSED`, `LIMIT`, `CLIMIT`, `GLIMIT`, `WATCHREG`, `PendingAdminTransfer` | Contract (extended on every instance write and by `bump_instance_ttl`, to 535,680 ledgers) |
-| AlertRegistry | Persistent | `Alert`, `RemovedAlert`, `AlertActive`, `AdminSuspended`, `OwnerIndex`, `OwnerLiveCount`, `ContractIndex`, `ContractLiveCount`, `DeactivationCursor`, `PendingTransfer` | Contract (`extend_ttl` to `DEFAULT_TTL` = 17,280 ledgers on write, except `PendingTransfer` at `ALERT_TRANSFER_EXPIRY_LEDGERS`; `bump_alert` up to `MAX_TTL`) |
-| AlertRegistry | Instance | `NEXT_ID`, `LIVE`, `ADMIN`, `PAUSED`, `LIMIT`, `CLIMIT`, `GLIMIT`, `WATCHREG` | Contract (extended on every instance write and by `bump_instance_ttl`, to 535,680 ledgers) |
+| AlertRegistry | Persistent | `Alert`, `AlertActive`, `AdminSuspended`, `PendingTransfer`, `OwnerIndex`, `OwnerLiveCount`, `ContractIndex`, `ContractLiveCount`, `DeactivationCursor`, `RemovedAlert`, `AlertExpiry` | Contract (`extend_ttl` to `DEFAULT_TTL` = 17,280 ledgers on write; `bump_alert` up to `MAX_TTL`) |
+| AlertRegistry | Instance | `NEXT_ID`, `LIVE`, `ADMIN`, `PAUSED`, `LIMIT`, `CLIMIT`, `GLIMIT`, `WATCHREG`, `PendingAdminTransfer`, `Guardian` | Contract (extended on every instance write and by `bump_instance_ttl`, to 535,680 ledgers) |
+| AlertRegistry | Persistent | `Alert`, `RemovedAlert`, `AlertActive`, `AdminSuspended`, `OwnerIndex`, `OwnerLiveCount`, `ContractIndex`, `ContractLiveCount`, `DeactivationCursor`, `PendingTransfer`, `AlertExpiry` | Contract (`extend_ttl` to `DEFAULT_TTL` = 17,280 ledgers on write, except `PendingTransfer` at `ALERT_TRANSFER_EXPIRY_LEDGERS`; `bump_alert` up to `MAX_TTL`) |
+| AlertRegistry | Instance | `NEXT_ID`, `LIVE`, `ADMIN`, `PAUSED`, `LIMIT`, `CLIMIT`, `GLIMIT`, `WATCHREG`, `Guardian` | Contract (extended on every instance write and by `bump_instance_ttl`, to 535,680 ledgers) |
 | WatcherRegistry | Instance | `Admins`, `Watchers`, `PendingAdminTransfer`, `TimelockDelay`, `PendingAction`, `Paused`, `W_CNT` | Contract (`bump_instance_ttl`, extends to 535,680 ledgers) |
