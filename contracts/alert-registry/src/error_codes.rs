@@ -44,5 +44,9 @@ mod tests {
         assert_eq!(ContractError::TimelockNotExpired as u32, 26);
         assert_eq!(ContractError::DelayTooLarge as u32, 27);
         assert_eq!(ContractError::TimelockRequired as u32, 28);
+        assert_eq!(ContractError::InvalidTtl as u32, 26);
+        assert_eq!(ContractError::EmptyRules as u32, 25);
+        assert_eq!(ContractError::AdminTransferExpired as u32, 24);
+        assert_eq!(ContractError::NotAGuardian as u32, 24);
     }
 }
