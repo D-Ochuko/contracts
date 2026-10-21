@@ -114,6 +114,10 @@ pub enum DataKey {
     /// [`DataKey::OwnerLiveCount`] was renamed from: that one counted live
     /// (non-removed) alerts, not active ones.
     OwnerActiveCount(Address),
+    /// Stores the target contract of an alert, alongside its ID, so pruning an
+    /// expired alert can still repair the target's [`DataKey::ContractIndex`]
+    /// and [`DataKey::ContractLiveCount`]. Removed with the alert.
+    AlertTarget(u64),
     /// Stores the list of alert IDs watching a given contract address.
     ContractIndex(Address),
     /// Stores the number of currently live (non-removed) alerts targeting
@@ -1738,6 +1742,24 @@ impl AlertRegistry {
         Ok(Self::prune_owner_index(&env, &owner))
     }
 
+    /// Drop IDs from `target`'s contract index whose alert record no longer
+    /// exists (it expired), and recount the contract's live-alert counter so
+    /// the quota they held is released.
+    ///
+    /// Callable by anyone and requires no auth: it only removes entries that
+    /// point at nothing. Scans the whole contract index, so the cost grows
+    /// with the number of alerts ever registered against `target`.
+    ///
+    /// # Returns
+    /// The number of dangling IDs removed.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::Paused`] while the contract is paused.
+    pub fn prune_contract_index(env: Env, target: Address) -> Result<u32, ContractError> {
+        Self::assert_not_paused(&env)?;
+        Ok(Self::recount_contract_index(&env, &target))
+    }
+
     /// The owner-index position the next [`AlertRegistry::prune_expired_alerts`]
     /// pass resumes from, or `None` if no prune scan is in progress.
     #[must_use]
@@ -3067,9 +3089,10 @@ impl AlertRegistry {
     /// are gone), decrement the live counter accordingly, and clear any
     /// leftover per-alert entries.
     ///
-    /// The contract index cannot be cleaned here: the target contract was only
-    /// recorded in the expired record. Its dangling IDs are harmless, since
-    /// contract-level counts check that each record exists.
+    /// The target contract of each dropped alert is read from its
+    /// [`DataKey::AlertTarget`] entry, and that contract's index and live
+    /// counter are rebuilt via [`AlertRegistry::prune_contract_index`], so
+    /// expired alerts release their per-contract quota too.
     fn drop_dangling_ids(env: &Env, owner: &Address, ids: &Vec<u64>, kept: &Vec<u64>) {
         let storage = env.storage().persistent();
         let dropped = ids.len();
@@ -3077,6 +3100,10 @@ impl AlertRegistry {
             storage.remove(&DataKey::AlertActive(id));
             storage.remove(&DataKey::PendingTransfer(id));
             storage.remove(&DataKey::AdminSuspended(id));
+            if let Some(target) = storage.get::<DataKey, Address>(&DataKey::AlertTarget(id)) {
+                storage.remove(&DataKey::AlertTarget(id));
+                Self::recount_contract_index(env, &target);
+            }
         }
         storage.set(&DataKey::OwnerIndex(owner.clone()), &kept);
         storage.extend_ttl(
@@ -3136,6 +3163,26 @@ impl AlertRegistry {
         }
         Self::set_contract_live_count(env, target, count);
         count
+    }
+
+    /// Rewrite `target`'s contract index without IDs whose record is gone and
+    /// set the live counter to what remains. Returns how many IDs were dropped.
+    fn recount_contract_index(env: &Env, target: &Address) -> u32 {
+        let ids = Self::contract_index(env, target);
+        let mut kept: Vec<u64> = vec![env];
+        for id in ids.iter() {
+            if env.storage().persistent().has(&DataKey::Alert(id)) {
+                kept.push_back(id);
+            }
+        }
+        let dropped = ids.len() - kept.len();
+        if dropped > 0 {
+            let key = DataKey::ContractIndex(target.clone());
+            env.storage().persistent().set(&key, &kept);
+            env.storage().persistent().extend_ttl(&key, DEFAULT_TTL, DEFAULT_TTL);
+        }
+        Self::set_contract_live_count(env, target, kept.len());
+        dropped
     }
 
     fn set_contract_live_count(env: &Env, target: &Address, count: u32) {
@@ -3203,6 +3250,9 @@ impl AlertRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::AlertActive(config_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AlertTarget(config_id));
 
         Self::remove_from_owner_index(env, &config.owner, config_id);
         Self::remove_from_contract_index(env, &config.target_contract, config_id);
@@ -3233,6 +3283,7 @@ impl AlertRegistry {
         let storage = env.storage().persistent();
         storage.set(&DataKey::Alert(config_id), config);
         storage.set(&DataKey::AlertActive(config_id), &config.active);
+        storage.set(&DataKey::AlertTarget(config_id), &config.target_contract);
         Self::touch_alert(env, config_id, config, DEFAULT_TTL);
     }
 
@@ -3248,6 +3299,10 @@ impl AlertRegistry {
         let storage = env.storage().persistent();
         storage.extend_ttl(&DataKey::Alert(config_id), ttl, ttl);
         storage.extend_ttl(&DataKey::AlertActive(config_id), ttl, ttl);
+        let target_key = DataKey::AlertTarget(config_id);
+        if storage.has(&target_key) {
+            storage.extend_ttl(&target_key, ttl, ttl);
+        }
         storage.extend_ttl(&DataKey::OwnerIndex(config.owner.clone()), ttl, ttl);
         storage.extend_ttl(
             &DataKey::ContractIndex(config.target_contract.clone()),
@@ -4050,6 +4105,29 @@ mod tests {
     fn test_per_contract_alert_limit_defaults_to_zero_unlimited() {
         let (_env, client) = setup();
         assert_eq!(client.get_per_contract_alert_limit(), 0u32);
+    }
+
+    #[test]
+    fn test_prune_contract_index_releases_expired_quota() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        client.set_per_contract_alert_limit(&admin, &2u32);
+
+        let target = Address::generate(&env);
+        let rules = vec![&env, str(&env, "rule:transfer")];
+        let owner = Address::generate(&env);
+        client.register_alert(&owner, &target, &str(&env, "A1"), &hash64c(&env, '1'), &rules);
+        client.register_alert(&owner, &target, &str(&env, "A2"), &hash64c(&env, '2'), &rules);
+
+        // Let both alerts expire, then prune the contract side.
+        env.ledger().with_mut(|li| li.sequence_number += DEFAULT_TTL + 10);
+        assert_eq!(client.prune_contract_index(&target), 2u32);
+        assert_eq!(client.prune_contract_index(&target), 0u32);
+
+        // Quota is free again.
+        client.register_alert(&owner, &target, &str(&env, "A3"), &hash64c(&env, '3'), &rules);
+        client.register_alert(&owner, &target, &str(&env, "A4"), &hash64c(&env, '4'), &rules);
     }
 
     #[test]

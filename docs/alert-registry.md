@@ -366,9 +366,23 @@ Removes IDs from `owner`'s index whose alert record no longer exists (expired in
 
 Each call examines at most `MAX_PRUNE_PER_CALL` (50) index entries, resuming from a stored `PruneCursor`, like `deactivate_all_alerts`. `get_prune_cursor(owner) -> Option<u32>` returns `Some(_)` while a scan is still in progress; call `prune_expired_alerts` again until it returns `None`.
 
-**Events:** Emits `(Symbol("alert"), Symbol("pruned"))` with data `(owner: Address, count: u32)` when at least one ID was removed.
+**Events:** Emits `(Symbol("alert"), Symbol("pruned"))` with data `(owner: Address, count: u32, ids: Vec<u64>)` when at least one ID was removed.
 
-**Limitation:** the expired alert's `ContractIndex` entry cannot be removed, because the target contract was only recorded in the expired record. It does not count against any limit: per-contract counts only count IDs whose record exists.
+**Contract side:** each alert's target is also stored under `AlertTarget(id)`, so pruning repairs the target's `ContractIndex` and `ContractLiveCount` too. Expired alerts therefore release their per-contract quota.
+
+---
+
+### `prune_contract_index`
+
+Drops IDs from `target`'s contract index whose alert record no longer exists (expired) and recounts `ContractLiveCount`. Callable by anyone with no auth. Scans the whole contract index.
+
+**Parameters**
+
+| Name | Type | Description |
+|---|---|---|
+| `target` | `Address` | Contract whose index is cleaned up |
+
+**Returns:** `u32` — the number of dangling IDs removed
 
 ---
 
