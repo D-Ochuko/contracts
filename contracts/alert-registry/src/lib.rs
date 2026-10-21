@@ -1,4 +1,4 @@
-//! `AlertRegistry` — Soroban contract that stores alert configurations on-chain,
+﻿//! `AlertRegistry` — Soroban contract that stores alert configurations on-chain,
 //! keyed by the contract address they watch.
 //!
 //! See `docs/alert-registry.md` for the function reference.
@@ -451,6 +451,7 @@ mod watcher_registry_interface {
     #[contractclient(name = "WatcherRegistryClient")]
     pub trait WatcherRegistry {
         fn is_watcher_authorized(env: Env, watcher: Address) -> bool;
+        fn get_watcher_count(env: Env) -> u32;
     }
 }
 
@@ -1099,6 +1100,14 @@ impl AlertRegistry {
         let probe = ExtWatcherClient::new(&env, &watcher_registry);
         if probe.try_is_watcher_authorized(&admin).is_err() {
             return Err(ContractError::InvalidWatcherRegistry);
+        }
+        match probe.try_get_watcher_count() {
+            Ok(Ok(count)) => {
+                if count == 0 {
+                    return Err(ContractError::InvalidWatcherRegistry);
+                }
+            }
+            _ => return Err(ContractError::InvalidWatcherRegistry),
         }
 
         env.storage()
@@ -5033,6 +5042,11 @@ mod tests {
     fn test_set_and_get_watcher_registry() {
         let (env, admin, alert_client, watcher_client) = setup_with_watcher_registry();
 
+        let admin = Address::generate(&env);
+        alert_client.initialize(&admin);
+        watcher_client.initialize(&admin);
+        let watcher = Address::generate(&env);
+        watcher_client.register_watcher(&admin, &watcher);
 
         let watcher_contract_id = watcher_client.address.clone();
         alert_client.set_watcher_registry(&admin, &watcher_contract_id);
@@ -5050,6 +5064,11 @@ mod tests {
         let (env, admin, alert_client, watcher_client) = setup_with_watcher_registry();
         assert!(!alert_client.is_watcher_gating_enabled());
 
+        let admin = Address::generate(&env);
+        alert_client.initialize(&admin);
+        watcher_client.initialize(&admin);
+        let watcher = Address::generate(&env);
+        watcher_client.register_watcher(&admin, &watcher);
 
         let watcher_contract_id = watcher_client.address.clone();
         alert_client.set_watcher_registry(&admin, &watcher_contract_id);
@@ -5203,6 +5222,24 @@ mod tests {
         );
     }
 
+
+    // 17e. set_watcher_registry rejects a freshly deployed, empty WatcherRegistry (#423)
+    #[test]
+    fn test_set_watcher_registry_rejects_empty_watcher_registry() {
+        let (env, alert_client, watcher_client) = setup_with_watcher_registry();
+
+        let admin = Address::generate(&env);
+        alert_client.initialize(&admin);
+        watcher_client.initialize(&admin);
+
+        // Freshly deployed, empty watcher registry has 0 watchers
+        assert_eq!(watcher_client.get_watcher_count(), 0);
+
+        let watcher_contract_id = watcher_client.address.clone();
+        let res = alert_client.try_set_watcher_registry(&admin, &watcher_contract_id);
+        assert_eq!(res, Err(Ok(ContractError::InvalidWatcherRegistry)));
+        assert!(alert_client.get_watcher_registry().is_none());
+    }
     // 17c. clear_watcher_registry rejects non-admin callers.
     #[test]
     fn test_clear_watcher_registry_non_admin_rejected() {

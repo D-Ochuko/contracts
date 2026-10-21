@@ -1,4 +1,4 @@
-# Alert Registry — Function Reference
+﻿# Alert Registry — Function Reference
 
 Contract that stores alert configurations on-chain, keyed by contract address.
 
