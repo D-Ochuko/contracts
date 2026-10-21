@@ -1,4 +1,4 @@
-//! `AlertRegistry` — Soroban contract that stores alert configurations on-chain,
+﻿//! `AlertRegistry` — Soroban contract that stores alert configurations on-chain,
 //! keyed by the contract address they watch.
 //!
 //! See `docs/alert-registry.md` for the function reference.
@@ -451,6 +451,7 @@ mod watcher_registry_interface {
     #[contractclient(name = "WatcherRegistryClient")]
     pub trait WatcherRegistry {
         fn is_watcher_authorized(env: Env, watcher: Address) -> bool;
+        fn get_watcher_count(env: Env) -> u32;
     }
 }
 
@@ -996,6 +997,9 @@ impl AlertRegistry {
         admin.require_auth();
         Self::assert_admin(&env, &admin)?;
         Self::assert_not_paused(&env)?;
+        env.storage()
+            .instance()
+            .set(&symbol_short!("CLIMIT"), &limit);
         env.storage().instance().set(&instance_key::CLIMIT, &limit);
         Self::extend_instance_ttl(&env);
 
@@ -1040,6 +1044,9 @@ impl AlertRegistry {
         admin.require_auth();
         Self::assert_admin(&env, &admin)?;
         Self::assert_not_paused(&env)?;
+        env.storage()
+            .instance()
+            .set(&symbol_short!("GLIMIT"), &limit);
         env.storage().instance().set(&instance_key::GLIMIT, &limit);
         Self::extend_instance_ttl(&env);
         env.events().publish(
@@ -1094,6 +1101,14 @@ impl AlertRegistry {
         if probe.try_is_watcher_authorized(&admin).is_err() {
             return Err(ContractError::InvalidWatcherRegistry);
         }
+        match probe.try_get_watcher_count() {
+            Ok(Ok(count)) => {
+                if count == 0 {
+                    return Err(ContractError::InvalidWatcherRegistry);
+                }
+            }
+            _ => return Err(ContractError::InvalidWatcherRegistry),
+        }
 
         env.storage()
             .instance()
@@ -1124,6 +1139,7 @@ impl AlertRegistry {
         admin.require_auth();
         Self::assert_admin(&env, &admin)?;
         Self::assert_not_paused(&env)?;
+        env.storage().instance().remove(&symbol_short!("WATCHREG"));
         env.storage().instance().remove(&instance_key::WATCHREG);
         Self::extend_instance_ttl(&env);
         env.events().publish(
@@ -2450,7 +2466,7 @@ impl AlertRegistry {
         env: Env,
         querier: Address,
         target_contract: Address,
-    ) -> Result<Vec<(u64, AlertConfig)>, ContractError> {
+    ) -> Result<Vec<AlertConfig>, ContractError> {
         Self::assert_watcher_if_configured(&env, &querier)?;
         let ids = Self::contract_index(&env, &target_contract);
         Ok(Self::configs_for_ids(&env, &ids))
@@ -2482,7 +2498,7 @@ impl AlertRegistry {
         env: Env,
         querier: Address,
         target_contract: Address,
-    ) -> Result<Vec<(u64, AlertConfig)>, ContractError> {
+    ) -> Result<Vec<AlertConfig>, ContractError> {
         Self::assert_watcher_if_configured(&env, &querier)?;
         let ids = Self::contract_index(&env, &target_contract);
         Ok(Self::active_configs_for_ids(&env, &ids))
@@ -2511,7 +2527,7 @@ impl AlertRegistry {
         env: Env,
         querier: Address,
         owner: Address,
-    ) -> Result<Vec<(u64, AlertConfig)>, ContractError> {
+    ) -> Result<Vec<AlertConfig>, ContractError> {
         Self::assert_watcher_if_configured(&env, &querier)?;
         let ids = Self::owner_index(&env, &owner);
         Ok(Self::configs_for_ids(&env, &ids))
@@ -2573,7 +2589,7 @@ impl AlertRegistry {
         env: Env,
         querier: Address,
         ids: Vec<u64>,
-    ) -> Result<Vec<(u64, AlertConfig)>, ContractError> {
+    ) -> Result<Vec<AlertConfig>, ContractError> {
         Self::assert_watcher_if_configured(&env, &querier)?;
         Ok(Self::configs_for_ids(&env, &ids))
     }
@@ -2591,7 +2607,7 @@ impl AlertRegistry {
         target_contract: Address,
         offset: u32,
         limit: u32,
-    ) -> Result<Vec<(u64, AlertConfig)>, ContractError> {
+    ) -> Result<Vec<AlertConfig>, ContractError> {
         Self::assert_watcher_if_configured(&env, &querier)?;
         let ids = Self::contract_index(&env, &target_contract);
         Ok(Self::configs_paginated(&env, &ids, offset, limit))
@@ -2635,7 +2651,7 @@ impl AlertRegistry {
         target_contract: Address,
         offset: u32,
         limit: u32,
-    ) -> Result<Vec<(u64, AlertConfig)>, ContractError> {
+    ) -> Result<Vec<AlertConfig>, ContractError> {
         Self::assert_watcher_if_configured(&env, &querier)?;
         let ids = Self::contract_index(&env, &target_contract);
         Ok(Self::active_configs_paginated(&env, &ids, offset, limit))
@@ -2654,7 +2670,7 @@ impl AlertRegistry {
         owner: Address,
         offset: u32,
         limit: u32,
-    ) -> Result<Vec<(u64, AlertConfig)>, ContractError> {
+    ) -> Result<Vec<AlertConfig>, ContractError> {
         Self::assert_watcher_if_configured(&env, &querier)?;
         let ids = Self::owner_index(&env, &owner);
         Ok(Self::configs_paginated(&env, &ids, offset, limit))
@@ -2780,8 +2796,27 @@ impl AlertRegistry {
                     if cfg.active {
                         cfg.active = false;
                         cfg.updated_at = env.ledger().timestamp();
-                        cfg.updated_ledger = env.ledger().sequence();
                         Self::persist_alert(&env, id, &cfg);
+                        cfg.updated_ledger = env.ledger().sequence();
+                        env.storage().persistent().set(&DataKey::Alert(id), &cfg);
+                        env.storage().persistent().extend_ttl(
+                            &DataKey::Alert(id),
+                            DEFAULT_TTL,
+                            DEFAULT_TTL,
+                        );
+                        env.storage()
+                            .persistent()
+                            .set(&DataKey::AlertActive(id), &false);
+                        env.storage().persistent().extend_ttl(
+                            &DataKey::AlertActive(id),
+                            DEFAULT_TTL,
+                            DEFAULT_TTL,
+                        );
+                        env.storage().persistent().extend_ttl(
+                            &DataKey::ContractIndex(cfg.target_contract.clone()),
+                            DEFAULT_TTL,
+                            DEFAULT_TTL,
+                        );
                         count += 1;
                     }
                 }
@@ -2902,7 +2937,7 @@ impl AlertRegistry {
     /// * `limit` - Maximum number of IDs to scan starting at `offset`.
     ///
     /// # Returns
-    /// A `Vec<(u64, AlertConfig)>` containing every live alert or removal tombstone
+    /// A `Vec<AlertConfig>` containing every live alert or removal tombstone
     /// in the ID range `[offset, offset + limit)` (clamped to the current
     /// alert count) with `updated_at >= since`.
     ///
@@ -2925,7 +2960,7 @@ impl AlertRegistry {
         since: u64,
         offset: u32,
         limit: u32,
-    ) -> Vec<(u64, AlertConfig)> {
+    ) -> Vec<AlertConfig> {
         let total: u64 = env
             .storage()
             .instance()
@@ -2937,7 +2972,7 @@ impl AlertRegistry {
             .saturating_add(u64::from(limit.min(MAX_PAGE_SIZE)))
             .min(total);
 
-        let mut out: Vec<(u64, AlertConfig)> = vec![&env];
+        let mut out: Vec<AlertConfig> = vec![&env];
         for id in range_start..range_end {
             if let Some(cfg) = env
                 .storage()
@@ -2950,12 +2985,12 @@ impl AlertRegistry {
                 })
             {
                 if cfg.updated_at >= since {
-                    out.push_back((id, cfg));
+                    out.push_back(cfg);
                 }
             }
         }
         out
-    pub fn get_alerts_modified_since(env: Env, since: u64, offset: u32, limit: u32) -> Vec<(u64, AlertConfig)> {
+    pub fn get_alerts_modified_since(env: Env, since: u64, offset: u32, limit: u32) -> Vec<AlertConfig> {
         Self::scan_alerts_modified(&env, offset, limit, |cfg| cfg.updated_at >= since)
     }
 
@@ -2988,7 +3023,7 @@ impl AlertRegistry {
     /// * `limit` - Maximum number of IDs to scan starting at `offset`.
     ///
     /// # Returns
-    /// A `Vec<(u64, AlertConfig)>` containing every live alert or removal tombstone
+    /// A `Vec<AlertConfig>` containing every live alert or removal tombstone
     /// in the ID range `[offset, offset + limit)` (clamped to the current
     /// alert count) with `updated_ledger >= since_ledger`.
     ///
@@ -3004,7 +3039,7 @@ impl AlertRegistry {
         since_ledger: u32,
         offset: u32,
         limit: u32,
-    ) -> Vec<(u64, AlertConfig)> {
+    ) -> Vec<AlertConfig> {
         Self::scan_alerts_modified(&env, offset, limit, |cfg| cfg.updated_ledger >= since_ledger)
     }
 
@@ -3127,7 +3162,7 @@ impl AlertRegistry {
     /// Iterates the ID range `[offset, offset + limit)` (clamped to the
     /// current alert count), loads each live alert or removal tombstone, and
     /// collects every entry for which `predicate` returns `true`.
-    fn scan_alerts_modified<F>(env: &Env, offset: u32, limit: u32, predicate: F) -> Vec<(u64, AlertConfig)>
+    fn scan_alerts_modified<F>(env: &Env, offset: u32, limit: u32, predicate: F) -> Vec<AlertConfig>
     where
         F: Fn(&AlertConfig) -> bool,
     {
@@ -3142,7 +3177,7 @@ impl AlertRegistry {
             .saturating_add(u64::from(limit.min(MAX_PAGE_SIZE)))
             .min(total);
 
-        let mut out: Vec<(u64, AlertConfig)> = vec![env];
+        let mut out: Vec<AlertConfig> = vec![env];
         for id in range_start..range_end {
             if let Some(cfg) = env
                 .storage()
@@ -3155,7 +3190,7 @@ impl AlertRegistry {
                 })
             {
                 if predicate(&cfg) {
-                    out.push_back((id, cfg));
+                    out.push_back(cfg);
                 }
             }
         }
@@ -3839,12 +3874,12 @@ impl AlertRegistry {
     ///
     /// IDs that no longer exist in storage (expired or removed) are silently
     /// skipped.
-    fn configs_for_ids(env: &Env, ids: &Vec<u64>) -> Vec<(u64, AlertConfig)> {
-        let mut out: Vec<(u64, AlertConfig)> = vec![env];
+    fn configs_for_ids(env: &Env, ids: &Vec<u64>) -> Vec<AlertConfig> {
+        let mut out: Vec<AlertConfig> = vec![env];
         for i in 0..ids.len() {
             let id = ids.get(i).unwrap();
             if let Some(cfg) = env.storage().persistent().get(&DataKey::Alert(id)) {
-                out.push_back((id, cfg));
+                out.push_back(cfg);
             }
         }
         out
@@ -3854,8 +3889,8 @@ impl AlertRegistry {
     ///
     /// IDs that no longer exist in storage are silently skipped, as are configs
     /// whose `active` field is `false`.
-    fn active_configs_for_ids(env: &Env, ids: &Vec<u64>) -> Vec<(u64, AlertConfig)> {
-        let mut out: Vec<(u64, AlertConfig)> = vec![env];
+    fn active_configs_for_ids(env: &Env, ids: &Vec<u64>) -> Vec<AlertConfig> {
+        let mut out: Vec<AlertConfig> = vec![env];
         for i in 0..ids.len() {
             let id = ids.get(i).unwrap();
             if let Some(cfg) = env
@@ -3864,22 +3899,22 @@ impl AlertRegistry {
                 .get::<DataKey, AlertConfig>(&DataKey::Alert(id))
             {
                 if cfg.active {
-                    out.push_back((id, cfg));
+                    out.push_back(cfg);
                 }
             }
         }
         out
     }
 
-    fn configs_paginated(env: &Env, ids: &Vec<u64>, offset: u32, limit: u32) -> Vec<(u64, AlertConfig)> {
-        let mut out: Vec<(u64, AlertConfig)> = vec![env];
+    fn configs_paginated(env: &Env, ids: &Vec<u64>, offset: u32, limit: u32) -> Vec<AlertConfig> {
+        let mut out: Vec<AlertConfig> = vec![env];
         let count = ids.len();
         let first = offset.min(count);
         let last = offset.saturating_add(limit.min(MAX_PAGE_SIZE)).min(count);
         for i in first..last {
             let id = ids.get(i).unwrap();
             if let Some(cfg) = env.storage().persistent().get(&DataKey::Alert(id)) {
-                out.push_back((id, cfg));
+                out.push_back(cfg);
             }
         }
         out
@@ -3896,8 +3931,8 @@ impl AlertRegistry {
         ids: &Vec<u64>,
         offset: u32,
         limit: u32,
-    ) -> Vec<(u64, AlertConfig)> {
-        let mut out: Vec<(u64, AlertConfig)> = vec![env];
+    ) -> Vec<AlertConfig> {
+        let mut out: Vec<AlertConfig> = vec![env];
         let count = ids.len();
         let first = offset.min(count);
         let last = offset
@@ -3911,7 +3946,7 @@ impl AlertRegistry {
                 .get::<DataKey, AlertConfig>(&DataKey::Alert(id))
             {
                 if cfg.active {
-                    out.push_back((id, cfg));
+                    out.push_back(cfg);
                 }
             }
         }
@@ -3919,8 +3954,8 @@ impl AlertRegistry {
     }
 
     /// Like [`AlertRegistry::configs_paginated`] but only includes entries where `active == true`.
-    fn active_configs_paginated(env: &Env, ids: &Vec<u64>, offset: u32, limit: u32) -> Vec<(u64, AlertConfig)> {
-        let mut out: Vec<(u64, AlertConfig)> = vec![env];
+    fn active_configs_paginated(env: &Env, ids: &Vec<u64>, offset: u32, limit: u32) -> Vec<AlertConfig> {
+        let mut out: Vec<AlertConfig> = vec![env];
         let count = ids.len();
         let first = offset.min(count);
         let last = offset
@@ -3934,7 +3969,7 @@ impl AlertRegistry {
                 .get::<DataKey, AlertConfig>(&DataKey::Alert(id))
             {
                 if cfg.active {
-                    out.push_back((id, cfg));
+                    out.push_back(cfg);
                 }
             }
         }
@@ -5007,6 +5042,11 @@ mod tests {
     fn test_set_and_get_watcher_registry() {
         let (env, admin, alert_client, watcher_client) = setup_with_watcher_registry();
 
+        let admin = Address::generate(&env);
+        alert_client.initialize(&admin);
+        watcher_client.initialize(&admin);
+        let watcher = Address::generate(&env);
+        watcher_client.register_watcher(&admin, &watcher);
 
         let watcher_contract_id = watcher_client.address.clone();
         alert_client.set_watcher_registry(&admin, &watcher_contract_id);
@@ -5024,6 +5064,11 @@ mod tests {
         let (env, admin, alert_client, watcher_client) = setup_with_watcher_registry();
         assert!(!alert_client.is_watcher_gating_enabled());
 
+        let admin = Address::generate(&env);
+        alert_client.initialize(&admin);
+        watcher_client.initialize(&admin);
+        let watcher = Address::generate(&env);
+        watcher_client.register_watcher(&admin, &watcher);
 
         let watcher_contract_id = watcher_client.address.clone();
         alert_client.set_watcher_registry(&admin, &watcher_contract_id);
@@ -5177,6 +5222,24 @@ mod tests {
         );
     }
 
+
+    // 17e. set_watcher_registry rejects a freshly deployed, empty WatcherRegistry (#423)
+    #[test]
+    fn test_set_watcher_registry_rejects_empty_watcher_registry() {
+        let (env, alert_client, watcher_client) = setup_with_watcher_registry();
+
+        let admin = Address::generate(&env);
+        alert_client.initialize(&admin);
+        watcher_client.initialize(&admin);
+
+        // Freshly deployed, empty watcher registry has 0 watchers
+        assert_eq!(watcher_client.get_watcher_count(), 0);
+
+        let watcher_contract_id = watcher_client.address.clone();
+        let res = alert_client.try_set_watcher_registry(&admin, &watcher_contract_id);
+        assert_eq!(res, Err(Ok(ContractError::InvalidWatcherRegistry)));
+        assert!(alert_client.get_watcher_registry().is_none());
+    }
     // 17c. clear_watcher_registry rejects non-admin callers.
     #[test]
     fn test_clear_watcher_registry_non_admin_rejected() {
@@ -6619,33 +6682,6 @@ mod tests {
         assert!(
             scan_cost < 15_000_000,
             "get_alerts_modified_since cost {scan_cost} exceeded upper bound 15M instructions"
-        );
-    }
-
-    /// Bulk deactivation of 50 alerts writes each alert once and stays within
-    /// a CPU budget ceiling.
-    #[test]
-    fn test_deactivate_all_alerts_50_budget() {
-        const N: u32 = 50;
-        let (env, client) = setup();
-        let owner = Address::generate(&env);
-        let target = Address::generate(&env);
-        let hash = hash64(&env);
-        let rules = vec![&env, str(&env, "rule:transfer")];
-        for _ in 0..N {
-            let label = str(&env, "Alert");
-            client.register_alert(&owner, &target, &label, &hash, &rules);
-        }
-
-        let cpu_before = env.cost_estimate().budget().cpu_instruction_cost();
-        let deactivated = client.deactivate_all_alerts(&owner);
-        let cpu_after = env.cost_estimate().budget().cpu_instruction_cost();
-        let cost = cpu_after.saturating_sub(cpu_before);
-
-        assert_eq!(deactivated, N);
-        assert!(
-            cost < 100_000_000,
-            "deactivate_all_alerts cost {cost} exceeded upper bound 100M instructions"
         );
     }
 

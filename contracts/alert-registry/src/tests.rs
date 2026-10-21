@@ -1,3 +1,4 @@
+﻿use super::*;
 // The unpaginated getters are deprecated (#384) but still part of the
 // contract ABI; these tests pin their behaviour until they are removed.
 #![allow(deprecated)]
@@ -1764,6 +1765,9 @@ fn test_clear_watcher_registry_emits_disable_event() {
     let registry_id = env.register(watcher_registry::WatcherRegistry, (&admin,));
     let registry_client =
         watcher_registry::WatcherRegistryClient::new(&env, &registry_id);
+    registry_client.initialize(&admin);
+    let watcher = Address::generate(&env);
+    registry_client.register_watcher(&admin, &watcher);
     client.set_watcher_registry(&admin, &registry_id);
     client.clear_watcher_registry(&admin);
 
