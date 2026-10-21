@@ -506,7 +506,7 @@ If a `WatcherRegistry` is configured (via `set_watcher_registry`), `querier` mus
 | `querier` | `Address` | Address performing the query (checked against watcher registry if configured) |
 | `target_contract` | `Address` | Contract address to query |
 
-**Returns:** `Result<Vec<AlertConfig>, ContractError>` — `Ok(vec)` on success, may be empty.
+**Returns:** `Result<Vec<(u64, AlertConfig)>, ContractError>` — `Ok(vec)` on success, may be empty.
 
 ---
 
@@ -523,7 +523,7 @@ If a `WatcherRegistry` is configured (via `set_watcher_registry`), `querier` mus
 | `querier` | `Address` | Address performing the query (checked against watcher registry if configured) |
 | `target_contract` | `Address` | Contract address to query |
 
-**Returns:** `Result<Vec<AlertConfig>, ContractError>` — `Ok(vec)` on success, may be empty.
+**Returns:** `Result<Vec<(u64, AlertConfig)>, ContractError>` — `Ok(vec)` on success, may be empty.
 
 ---
 
@@ -540,7 +540,7 @@ If a `WatcherRegistry` is configured, `querier` must be a registered watcher or 
 | `querier` | `Address` | Address performing the query |
 | `owner` | `Address` | Owner address to query |
 
-**Returns:** `Result<Vec<AlertConfig>, ContractError>` — `Ok(vec)` on success, may be empty.
+**Returns:** `Result<Vec<(u64, AlertConfig)>, ContractError>` — `Ok(vec)` on success, may be empty.
 
 ---
 
@@ -687,7 +687,7 @@ If a `WatcherRegistry` is configured, `querier` must be a registered watcher or 
 | `offset` | `u32` | Number of results to skip |
 | `limit` | `u32` | Maximum number of results to return |
 
-**Returns:** `Result<Vec<AlertConfig>, ContractError>` — may be empty.
+**Returns:** `Result<Vec<(u64, AlertConfig)>, ContractError>` — may be empty.
 
 ---
 
@@ -708,7 +708,7 @@ If a `WatcherRegistry` is configured, `querier` must be a registered watcher or 
 | `offset` | `u32` | Number of index slots to skip |
 | `limit` | `u32` | Maximum number of index slots to scan (clamped) |
 
-**Returns:** `Result<Vec<AlertConfig>, ContractError>` — may be empty.
+**Returns:** `Result<Vec<(u64, AlertConfig)>, ContractError>` — may be empty.
 
 ---
 
@@ -727,7 +727,7 @@ If a `WatcherRegistry` is configured, `querier` must be a registered watcher or 
 | `offset` | `u32` | Number of results to skip |
 | `limit` | `u32` | Maximum number of results to return |
 
-**Returns:** `Result<Vec<AlertConfig>, ContractError>` — may be empty.
+**Returns:** `Result<Vec<(u64, AlertConfig)>, ContractError>` — may be empty.
 
 ---
 
@@ -747,7 +747,7 @@ Enables incremental sync for watcher nodes by passing the ledger timestamp of th
 | `offset` | `u32` | Number of alert IDs to skip from the start of ID space |
 | `limit` | `u32` | Maximum number of IDs to scan |
 
-**Returns:** `Vec<AlertConfig>` — live alerts and inactive removal tombstones
+**Returns:** `Vec<(u64, AlertConfig)>` — live alerts and inactive removal tombstones
 matching `updated_at >= since` among the IDs in `[offset, offset + limit)`.
 Continue paging by increasing `offset` by `limit` until it reaches
 `get_alert_count()`; a short or empty page does not indicate that later IDs
@@ -756,7 +756,7 @@ must be removed from the watcher's local state.
 All paginated alert queries cap `limit` at `MAX_PAGE_SIZE` (100 IDs), so
 passing a larger value is safe and does not create an unbounded RPC simulation.
 
-**Returns:** `Vec<AlertConfig>` — live alerts matching `updated_at >= since`.
+**Returns:** `Vec<(u64, AlertConfig)>` — live alerts matching `updated_at >= since`.
 
 ---
 
@@ -783,7 +783,7 @@ Provides unambiguous **incremental sync** for watcher nodes keyed on monotonic l
 | `offset` | `u32` | Number of alert IDs to skip from the start of ID space |
 | `limit` | `u32` | Maximum number of IDs to scan |
 
-**Returns:** `Vec<AlertConfig>` — live alerts matching `updated_ledger >= since_ledger`.
+**Returns:** `Vec<(u64, AlertConfig)>` — live alerts matching `updated_ledger >= since_ledger`.
 
 ---
 

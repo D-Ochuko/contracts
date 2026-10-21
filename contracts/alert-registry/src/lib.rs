@@ -2278,7 +2278,7 @@ impl AlertRegistry {
         env: Env,
         querier: Address,
         target_contract: Address,
-    ) -> Result<Vec<AlertConfig>, ContractError> {
+    ) -> Result<Vec<(u64, AlertConfig)>, ContractError> {
         Self::assert_watcher_if_configured(&env, &querier)?;
         let ids = Self::contract_index(&env, &target_contract);
         Ok(Self::configs_for_ids(&env, &ids))
@@ -2310,7 +2310,7 @@ impl AlertRegistry {
         env: Env,
         querier: Address,
         target_contract: Address,
-    ) -> Result<Vec<AlertConfig>, ContractError> {
+    ) -> Result<Vec<(u64, AlertConfig)>, ContractError> {
         Self::assert_watcher_if_configured(&env, &querier)?;
         let ids = Self::contract_index(&env, &target_contract);
         Ok(Self::active_configs_for_ids(&env, &ids))
@@ -2339,7 +2339,7 @@ impl AlertRegistry {
         env: Env,
         querier: Address,
         owner: Address,
-    ) -> Result<Vec<AlertConfig>, ContractError> {
+    ) -> Result<Vec<(u64, AlertConfig)>, ContractError> {
         Self::assert_watcher_if_configured(&env, &querier)?;
         let ids = Self::owner_index(&env, &owner);
         Ok(Self::configs_for_ids(&env, &ids))
@@ -2401,7 +2401,7 @@ impl AlertRegistry {
         env: Env,
         querier: Address,
         ids: Vec<u64>,
-    ) -> Result<Vec<AlertConfig>, ContractError> {
+    ) -> Result<Vec<(u64, AlertConfig)>, ContractError> {
         Self::assert_watcher_if_configured(&env, &querier)?;
         Ok(Self::configs_for_ids(&env, &ids))
     }
@@ -2419,7 +2419,7 @@ impl AlertRegistry {
         target_contract: Address,
         offset: u32,
         limit: u32,
-    ) -> Result<Vec<AlertConfig>, ContractError> {
+    ) -> Result<Vec<(u64, AlertConfig)>, ContractError> {
         Self::assert_watcher_if_configured(&env, &querier)?;
         let ids = Self::contract_index(&env, &target_contract);
         Ok(Self::configs_paginated(&env, &ids, offset, limit))
@@ -2463,7 +2463,7 @@ impl AlertRegistry {
         target_contract: Address,
         offset: u32,
         limit: u32,
-    ) -> Result<Vec<AlertConfig>, ContractError> {
+    ) -> Result<Vec<(u64, AlertConfig)>, ContractError> {
         Self::assert_watcher_if_configured(&env, &querier)?;
         let ids = Self::contract_index(&env, &target_contract);
         Ok(Self::active_configs_paginated(&env, &ids, offset, limit))
@@ -2482,7 +2482,7 @@ impl AlertRegistry {
         owner: Address,
         offset: u32,
         limit: u32,
-    ) -> Result<Vec<AlertConfig>, ContractError> {
+    ) -> Result<Vec<(u64, AlertConfig)>, ContractError> {
         Self::assert_watcher_if_configured(&env, &querier)?;
         let ids = Self::owner_index(&env, &owner);
         Ok(Self::configs_paginated(&env, &ids, offset, limit))
@@ -2730,7 +2730,7 @@ impl AlertRegistry {
     /// * `limit` - Maximum number of IDs to scan starting at `offset`.
     ///
     /// # Returns
-    /// A `Vec<AlertConfig>` containing every live alert or removal tombstone
+    /// A `Vec<(u64, AlertConfig)>` containing every live alert or removal tombstone
     /// in the ID range `[offset, offset + limit)` (clamped to the current
     /// alert count) with `updated_at >= since`.
     ///
@@ -2753,7 +2753,7 @@ impl AlertRegistry {
         since: u64,
         offset: u32,
         limit: u32,
-    ) -> Vec<AlertConfig> {
+    ) -> Vec<(u64, AlertConfig)> {
         let total: u64 = env
             .storage()
             .instance()
@@ -2765,7 +2765,7 @@ impl AlertRegistry {
             .saturating_add(u64::from(limit.min(MAX_PAGE_SIZE)))
             .min(total);
 
-        let mut out: Vec<AlertConfig> = vec![&env];
+        let mut out: Vec<(u64, AlertConfig)> = vec![&env];
         for id in range_start..range_end {
             if let Some(cfg) = env
                 .storage()
@@ -2778,12 +2778,12 @@ impl AlertRegistry {
                 })
             {
                 if cfg.updated_at >= since {
-                    out.push_back(cfg);
+                    out.push_back((id, cfg));
                 }
             }
         }
         out
-    pub fn get_alerts_modified_since(env: Env, since: u64, offset: u32, limit: u32) -> Vec<AlertConfig> {
+    pub fn get_alerts_modified_since(env: Env, since: u64, offset: u32, limit: u32) -> Vec<(u64, AlertConfig)> {
         Self::scan_alerts_modified(&env, offset, limit, |cfg| cfg.updated_at >= since)
     }
 
@@ -2816,7 +2816,7 @@ impl AlertRegistry {
     /// * `limit` - Maximum number of IDs to scan starting at `offset`.
     ///
     /// # Returns
-    /// A `Vec<AlertConfig>` containing every live alert or removal tombstone
+    /// A `Vec<(u64, AlertConfig)>` containing every live alert or removal tombstone
     /// in the ID range `[offset, offset + limit)` (clamped to the current
     /// alert count) with `updated_ledger >= since_ledger`.
     ///
@@ -2832,7 +2832,7 @@ impl AlertRegistry {
         since_ledger: u32,
         offset: u32,
         limit: u32,
-    ) -> Vec<AlertConfig> {
+    ) -> Vec<(u64, AlertConfig)> {
         Self::scan_alerts_modified(&env, offset, limit, |cfg| cfg.updated_ledger >= since_ledger)
     }
 
@@ -2941,7 +2941,7 @@ impl AlertRegistry {
     /// Iterates the ID range `[offset, offset + limit)` (clamped to the
     /// current alert count), loads each live alert or removal tombstone, and
     /// collects every entry for which `predicate` returns `true`.
-    fn scan_alerts_modified<F>(env: &Env, offset: u32, limit: u32, predicate: F) -> Vec<AlertConfig>
+    fn scan_alerts_modified<F>(env: &Env, offset: u32, limit: u32, predicate: F) -> Vec<(u64, AlertConfig)>
     where
         F: Fn(&AlertConfig) -> bool,
     {
@@ -2956,7 +2956,7 @@ impl AlertRegistry {
             .saturating_add(u64::from(limit.min(MAX_PAGE_SIZE)))
             .min(total);
 
-        let mut out: Vec<AlertConfig> = vec![env];
+        let mut out: Vec<(u64, AlertConfig)> = vec![env];
         for id in range_start..range_end {
             if let Some(cfg) = env
                 .storage()
@@ -2969,7 +2969,7 @@ impl AlertRegistry {
                 })
             {
                 if predicate(&cfg) {
-                    out.push_back(cfg);
+                    out.push_back((id, cfg));
                 }
             }
         }
@@ -3616,12 +3616,12 @@ impl AlertRegistry {
     ///
     /// IDs that no longer exist in storage (expired or removed) are silently
     /// skipped.
-    fn configs_for_ids(env: &Env, ids: &Vec<u64>) -> Vec<AlertConfig> {
-        let mut out: Vec<AlertConfig> = vec![env];
+    fn configs_for_ids(env: &Env, ids: &Vec<u64>) -> Vec<(u64, AlertConfig)> {
+        let mut out: Vec<(u64, AlertConfig)> = vec![env];
         for i in 0..ids.len() {
             let id = ids.get(i).unwrap();
             if let Some(cfg) = env.storage().persistent().get(&DataKey::Alert(id)) {
-                out.push_back(cfg);
+                out.push_back((id, cfg));
             }
         }
         out
@@ -3631,8 +3631,8 @@ impl AlertRegistry {
     ///
     /// IDs that no longer exist in storage are silently skipped, as are configs
     /// whose `active` field is `false`.
-    fn active_configs_for_ids(env: &Env, ids: &Vec<u64>) -> Vec<AlertConfig> {
-        let mut out: Vec<AlertConfig> = vec![env];
+    fn active_configs_for_ids(env: &Env, ids: &Vec<u64>) -> Vec<(u64, AlertConfig)> {
+        let mut out: Vec<(u64, AlertConfig)> = vec![env];
         for i in 0..ids.len() {
             let id = ids.get(i).unwrap();
             if let Some(cfg) = env
@@ -3641,22 +3641,22 @@ impl AlertRegistry {
                 .get::<DataKey, AlertConfig>(&DataKey::Alert(id))
             {
                 if cfg.active {
-                    out.push_back(cfg);
+                    out.push_back((id, cfg));
                 }
             }
         }
         out
     }
 
-    fn configs_paginated(env: &Env, ids: &Vec<u64>, offset: u32, limit: u32) -> Vec<AlertConfig> {
-        let mut out: Vec<AlertConfig> = vec![env];
+    fn configs_paginated(env: &Env, ids: &Vec<u64>, offset: u32, limit: u32) -> Vec<(u64, AlertConfig)> {
+        let mut out: Vec<(u64, AlertConfig)> = vec![env];
         let count = ids.len();
         let first = offset.min(count);
         let last = offset.saturating_add(limit.min(MAX_PAGE_SIZE)).min(count);
         for i in first..last {
             let id = ids.get(i).unwrap();
             if let Some(cfg) = env.storage().persistent().get(&DataKey::Alert(id)) {
-                out.push_back(cfg);
+                out.push_back((id, cfg));
             }
         }
         out
@@ -3673,8 +3673,8 @@ impl AlertRegistry {
         ids: &Vec<u64>,
         offset: u32,
         limit: u32,
-    ) -> Vec<AlertConfig> {
-        let mut out: Vec<AlertConfig> = vec![env];
+    ) -> Vec<(u64, AlertConfig)> {
+        let mut out: Vec<(u64, AlertConfig)> = vec![env];
         let count = ids.len();
         let first = offset.min(count);
         let last = offset
@@ -3688,7 +3688,7 @@ impl AlertRegistry {
                 .get::<DataKey, AlertConfig>(&DataKey::Alert(id))
             {
                 if cfg.active {
-                    out.push_back(cfg);
+                    out.push_back((id, cfg));
                 }
             }
         }
@@ -3696,8 +3696,8 @@ impl AlertRegistry {
     }
 
     /// Like [`AlertRegistry::configs_paginated`] but only includes entries where `active == true`.
-    fn active_configs_paginated(env: &Env, ids: &Vec<u64>, offset: u32, limit: u32) -> Vec<AlertConfig> {
-        let mut out: Vec<AlertConfig> = vec![env];
+    fn active_configs_paginated(env: &Env, ids: &Vec<u64>, offset: u32, limit: u32) -> Vec<(u64, AlertConfig)> {
+        let mut out: Vec<(u64, AlertConfig)> = vec![env];
         let count = ids.len();
         let first = offset.min(count);
         let last = offset
@@ -3711,7 +3711,7 @@ impl AlertRegistry {
                 .get::<DataKey, AlertConfig>(&DataKey::Alert(id))
             {
                 if cfg.active {
-                    out.push_back(cfg);
+                    out.push_back((id, cfg));
                 }
             }
         }
