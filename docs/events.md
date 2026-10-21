@@ -241,7 +241,11 @@ Emitted when dangling IDs of expired alerts are removed from an owner's index, b
 |---|---|
 | Topic 0 | `Symbol("alert")` |
 | Topic 1 | `Symbol("pruned")` |
-| Data | `(owner: Address, count: u32)` |
+| Data | `(owner: Address, count: u32, ids: Vec<u64>)` |
+
+`ids` lists the pruned alert IDs, at most `MAX_PRUNE_PER_CALL` (50) per pass.
+
+**Expiry vs. removal.** `alert.remove` means an owner or admin removed the alert, and a `RemovedAlert` tombstone is written for sync clients. `alert.pruned` means the alert's record already expired from storage on its own; no tombstone exists, so indexers and sync clients must treat every ID in `ids` as gone and purge it locally.
 
 **Status:** ✅ implemented (`prune_expired_alerts`)
 

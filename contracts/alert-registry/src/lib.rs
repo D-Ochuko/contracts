@@ -39,6 +39,13 @@ mod regression_tests;
 /// See `docs/ttl.md` for the full rationale.
 pub const DEFAULT_TTL: u32 = 17_280;
 
+/// Retention window, in ledgers, guaranteed for removal tombstones
+/// ([`DataKey::RemovedAlert`]). Approximately 7 days at the nominal 5-second
+/// ledger close time. A sync client whose cursor is older than
+/// [`AlertRegistry::get_min_sync_ledger`] may have missed tombstones and must
+/// do a full resync. See `docs/ttl.md`.
+pub const TOMBSTONE_TTL: u32 = 120_960;
+
 /// Upper bound on the TTL, in ledgers, that [`AlertRegistry::bump_alert`]
 /// applies.
 ///
@@ -123,6 +130,10 @@ pub enum DataKey {
     /// [`DataKey::OwnerLiveCount`] was renamed from: that one counted live
     /// (non-removed) alerts, not active ones.
     OwnerActiveCount(Address),
+    /// Stores the target contract of an alert, alongside its ID, so pruning an
+    /// expired alert can still repair the target's [`DataKey::ContractIndex`]
+    /// and [`DataKey::ContractLiveCount`]. Removed with the alert.
+    AlertTarget(u64),
     /// Stores the list of alert IDs watching a given contract address.
     ContractIndex(Address),
     /// Stores the number of currently live (non-removed) alerts targeting
@@ -314,6 +325,9 @@ pub struct AlertConfig {
     pub updated_ledger: u32,
     /// Whether the alert is currently active.
     pub active: bool,
+    /// `true` only on a removal tombstone returned by the sync queries.
+    /// A deactivated (paused) alert has `active == false` and `removed == false`.
+    pub removed: bool,
 }
 
 /// An ownership transfer proposed by an alert's owner and awaiting the
@@ -1195,6 +1209,7 @@ impl AlertRegistry {
             updated_at: now,
             updated_ledger: env.ledger().sequence(),
             active: true,
+            removed: false,
         };
 
         Self::push_owner_index(&env, &owner, id)?;
@@ -1781,10 +1796,31 @@ impl AlertRegistry {
     ///
     /// # Events
     /// Emits `(Symbol("alert"), Symbol("pruned"))` with data
-    /// `(owner: Address, count: u32)` when at least one ID was removed.
+    /// `(owner: Address, count: u32, ids: Vec<u64>)` when at least one ID was
+    /// removed. `ids` lists the dropped alert IDs (at most
+    /// [`MAX_PRUNE_PER_CALL`] per pass); the alerts expired and no
+    /// `RemovedAlert` tombstone exists for them.
     pub fn prune_expired_alerts(env: Env, owner: Address) -> Result<u32, ContractError> {
         Self::assert_not_paused(&env)?;
         Ok(Self::prune_owner_index(&env, &owner))
+    }
+
+    /// Drop IDs from `target`'s contract index whose alert record no longer
+    /// exists (it expired), and recount the contract's live-alert counter so
+    /// the quota they held is released.
+    ///
+    /// Callable by anyone and requires no auth: it only removes entries that
+    /// point at nothing. Scans the whole contract index, so the cost grows
+    /// with the number of alerts ever registered against `target`.
+    ///
+    /// # Returns
+    /// The number of dangling IDs removed.
+    ///
+    /// # Errors
+    /// Returns [`ContractError::Paused`] while the contract is paused.
+    pub fn prune_contract_index(env: Env, target: Address) -> Result<u32, ContractError> {
+        Self::assert_not_paused(&env)?;
+        Ok(Self::recount_contract_index(&env, &target))
     }
 
     /// The owner-index position the next [`AlertRegistry::prune_expired_alerts`]
@@ -2862,6 +2898,20 @@ impl AlertRegistry {
         Self::scan_alerts_modified(&env, offset, limit, |cfg| cfg.updated_ledger >= since_ledger)
     }
 
+    /// Return the oldest ledger sequence from which incremental sync is
+    /// guaranteed to be complete.
+    ///
+    /// Removal tombstones are retained for [`TOMBSTONE_TTL`] ledgers, so a
+    /// removal at ledger `L` is only guaranteed visible until
+    /// `L + TOMBSTONE_TTL`. A client whose sync cursor (the `since_ledger` it
+    /// would pass to [`Self::get_alerts_modified_since_ledger`]) is below this
+    /// value may have missed tombstones and must fall back to a full resync
+    /// (`since_ledger = 0`, discarding local state first).
+    #[must_use]
+    pub fn get_min_sync_ledger(env: Env) -> u32 {
+        env.ledger().sequence().saturating_sub(TOMBSTONE_TTL)
+    }
+
     /// Get the total number of alerts ever registered.
     ///
     /// This is a **monotonic counter** — it only increases and is never
@@ -3141,7 +3191,7 @@ impl AlertRegistry {
             Self::drop_dangling_ids(env, owner, &dangling, &kept);
             env.events().publish(
                 (symbol_short!("alert"), symbol_short!("pruned")),
-                (owner.clone(), dropped),
+                (owner.clone(), dropped, dangling),
             );
         }
 
@@ -3161,9 +3211,10 @@ impl AlertRegistry {
     /// are gone), decrement the live counter accordingly, and clear any
     /// leftover per-alert entries.
     ///
-    /// The contract index cannot be cleaned here: the target contract was only
-    /// recorded in the expired record. Its dangling IDs are harmless, since
-    /// contract-level counts check that each record exists.
+    /// The target contract of each dropped alert is read from its
+    /// [`DataKey::AlertTarget`] entry, and that contract's index and live
+    /// counter are rebuilt via [`AlertRegistry::prune_contract_index`], so
+    /// expired alerts release their per-contract quota too.
     fn drop_dangling_ids(env: &Env, owner: &Address, ids: &Vec<u64>, kept: &Vec<u64>) {
         let storage = env.storage().persistent();
         let dropped = ids.len();
@@ -3171,6 +3222,10 @@ impl AlertRegistry {
             storage.remove(&DataKey::AlertActive(id));
             storage.remove(&DataKey::PendingTransfer(id));
             storage.remove(&DataKey::AdminSuspended(id));
+            if let Some(target) = storage.get::<DataKey, Address>(&DataKey::AlertTarget(id)) {
+                storage.remove(&DataKey::AlertTarget(id));
+                Self::recount_contract_index(env, &target);
+            }
         }
         storage.set(&DataKey::OwnerIndex(owner.clone()), &kept);
         storage.extend_ttl(
@@ -3232,6 +3287,26 @@ impl AlertRegistry {
         count
     }
 
+    /// Rewrite `target`'s contract index without IDs whose record is gone and
+    /// set the live counter to what remains. Returns how many IDs were dropped.
+    fn recount_contract_index(env: &Env, target: &Address) -> u32 {
+        let ids = Self::contract_index(env, target);
+        let mut kept: Vec<u64> = vec![env];
+        for id in ids.iter() {
+            if env.storage().persistent().has(&DataKey::Alert(id)) {
+                kept.push_back(id);
+            }
+        }
+        let dropped = ids.len() - kept.len();
+        if dropped > 0 {
+            let key = DataKey::ContractIndex(target.clone());
+            env.storage().persistent().set(&key, &kept);
+            env.storage().persistent().extend_ttl(&key, DEFAULT_TTL, DEFAULT_TTL);
+        }
+        Self::set_contract_live_count(env, target, kept.len());
+        dropped
+    }
+
     fn set_contract_live_count(env: &Env, target: &Address, count: u32) {
         let key = DataKey::ContractLiveCount(target.clone());
         env.storage().persistent().set(&key, &count);
@@ -3277,6 +3352,7 @@ impl AlertRegistry {
         let mut tombstone = config.clone();
         tombstone.pending_webhook_hash = None;
         tombstone.active = false;
+        tombstone.removed = true;
         tombstone.updated_at = env.ledger().timestamp();
         tombstone.updated_ledger = env.ledger().sequence();
         env.storage()
@@ -3284,8 +3360,8 @@ impl AlertRegistry {
             .set(&DataKey::RemovedAlert(config_id), &tombstone);
         env.storage().persistent().extend_ttl(
             &DataKey::RemovedAlert(config_id),
-            DEFAULT_TTL,
-            DEFAULT_TTL,
+            TOMBSTONE_TTL,
+            TOMBSTONE_TTL,
         );
         env.storage()
             .persistent()
@@ -3296,6 +3372,9 @@ impl AlertRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::AlertActive(config_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AlertTarget(config_id));
 
         Self::remove_from_owner_index(env, &config.owner, config_id);
         Self::remove_from_contract_index(env, &config.target_contract, config_id);
@@ -3326,6 +3405,7 @@ impl AlertRegistry {
         let storage = env.storage().persistent();
         storage.set(&DataKey::Alert(config_id), config);
         storage.set(&DataKey::AlertActive(config_id), &config.active);
+        storage.set(&DataKey::AlertTarget(config_id), &config.target_contract);
         Self::touch_alert(env, config_id, config, DEFAULT_TTL);
     }
 
@@ -3341,6 +3421,10 @@ impl AlertRegistry {
         let storage = env.storage().persistent();
         storage.extend_ttl(&DataKey::Alert(config_id), ttl, ttl);
         storage.extend_ttl(&DataKey::AlertActive(config_id), ttl, ttl);
+        let target_key = DataKey::AlertTarget(config_id);
+        if storage.has(&target_key) {
+            storage.extend_ttl(&target_key, ttl, ttl);
+        }
         storage.extend_ttl(&DataKey::OwnerIndex(config.owner.clone()), ttl, ttl);
         storage.extend_ttl(
             &DataKey::ContractIndex(config.target_contract.clone()),
@@ -4198,6 +4282,29 @@ mod tests {
     fn test_per_contract_alert_limit_defaults_to_zero_unlimited() {
         let (_env, client) = setup();
         assert_eq!(client.get_per_contract_alert_limit(), 0u32);
+    }
+
+    #[test]
+    fn test_prune_contract_index_releases_expired_quota() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        client.set_per_contract_alert_limit(&admin, &2u32);
+
+        let target = Address::generate(&env);
+        let rules = vec![&env, str(&env, "rule:transfer")];
+        let owner = Address::generate(&env);
+        client.register_alert(&owner, &target, &str(&env, "A1"), &hash64c(&env, '1'), &rules);
+        client.register_alert(&owner, &target, &str(&env, "A2"), &hash64c(&env, '2'), &rules);
+
+        // Let both alerts expire, then prune the contract side.
+        env.ledger().with_mut(|li| li.sequence_number += DEFAULT_TTL + 10);
+        assert_eq!(client.prune_contract_index(&target), 2u32);
+        assert_eq!(client.prune_contract_index(&target), 0u32);
+
+        // Quota is free again.
+        client.register_alert(&owner, &target, &str(&env, "A3"), &hash64c(&env, '3'), &rules);
+        client.register_alert(&owner, &target, &str(&env, "A4"), &hash64c(&env, '4'), &rules);
     }
 
     #[test]
@@ -5848,6 +5955,50 @@ mod tests {
         let results = client.get_alerts_modified_since(&0u64, &0u32, &u32::MAX);
         assert_eq!(results.len(), 1);
         assert_eq!(results.get(0).unwrap().label, str(&env, "B"));
+    }
+
+    // 22b. Tombstones are distinguishable from deactivated alerts via `removed`
+    #[test]
+    fn test_sync_distinguishes_removed_from_deactivated() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let target = Address::generate(&env);
+        let rules = vec![&env, str(&env, "rule:transfer")];
+
+        let paused = client.register_alert(&owner, &target, &str(&env, "P"), &hash64(&env), &rules);
+        let gone = client.register_alert(&owner, &target, &str(&env, "R"), &hash64(&env), &rules);
+        client.set_alert_active(&owner, &paused, &false);
+        client.remove_alert(&owner, &gone);
+
+        let results = client.get_alerts_modified_since_ledger(&0u32, &0u32, &u32::MAX);
+        assert_eq!(results.len(), 2);
+        let p = results.get(0).unwrap();
+        assert!(!p.active && !p.removed);
+        let r = results.get(1).unwrap();
+        assert!(!r.active && r.removed);
+    }
+
+    // 22c. Tombstones outlive DEFAULT_TTL and the min sync ledger tracks TOMBSTONE_TTL
+    #[test]
+    fn test_tombstone_retention_and_min_sync_ledger() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let target = Address::generate(&env);
+        env.ledger().with_mut(|li| li.sequence_number = 100);
+        let id = client.register_alert(
+            &owner, &target, &str(&env, "A"), &hash64(&env), &vec![&env, str(&env, "rule:transfer")],
+        );
+        client.remove_alert(&owner, &id);
+        assert_eq!(client.get_min_sync_ledger(), 0);
+
+        // Past DEFAULT_TTL but within TOMBSTONE_TTL the tombstone is still served.
+        env.ledger().with_mut(|li| li.sequence_number = 100 + DEFAULT_TTL + 10);
+        let results = client.get_alerts_modified_since_ledger(&0u32, &0u32, &u32::MAX);
+        assert_eq!(results.len(), 1);
+        assert!(results.get(0).unwrap().removed);
+
+        env.ledger().with_mut(|li| li.sequence_number = 100 + TOMBSTONE_TTL + 5);
+        assert_eq!(client.get_min_sync_ledger(), 105);
     }
 
     // 23. since is exclusive of nothing — boundary value exactly equal is included

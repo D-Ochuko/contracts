@@ -366,9 +366,23 @@ Removes IDs from `owner`'s index whose alert record no longer exists (expired in
 
 Each call examines at most `MAX_PRUNE_PER_CALL` (50) index entries, resuming from a stored `PruneCursor`, like `deactivate_all_alerts`. `get_prune_cursor(owner) -> Option<u32>` returns `Some(_)` while a scan is still in progress; call `prune_expired_alerts` again until it returns `None`.
 
-**Events:** Emits `(Symbol("alert"), Symbol("pruned"))` with data `(owner: Address, count: u32)` when at least one ID was removed.
+**Events:** Emits `(Symbol("alert"), Symbol("pruned"))` with data `(owner: Address, count: u32, ids: Vec<u64>)` when at least one ID was removed.
 
-**Limitation:** the expired alert's `ContractIndex` entry cannot be removed, because the target contract was only recorded in the expired record. It does not count against any limit: per-contract counts only count IDs whose record exists.
+**Contract side:** each alert's target is also stored under `AlertTarget(id)`, so pruning repairs the target's `ContractIndex` and `ContractLiveCount` too. Expired alerts therefore release their per-contract quota.
+
+---
+
+### `prune_contract_index`
+
+Drops IDs from `target`'s contract index whose alert record no longer exists (expired) and recounts `ContractLiveCount`. Callable by anyone with no auth. Scans the whole contract index.
+
+**Parameters**
+
+| Name | Type | Description |
+|---|---|---|
+| `target` | `Address` | Contract whose index is cleaned up |
+
+**Returns:** `u32` — the number of dangling IDs removed
 
 ---
 
@@ -751,12 +765,22 @@ Enables incremental sync for watcher nodes by passing the ledger timestamp of th
 matching `updated_at >= since` among the IDs in `[offset, offset + limit)`.
 Continue paging by increasing `offset` by `limit` until it reaches
 `get_alert_count()`; a short or empty page does not indicate that later IDs
-cannot match. A tombstone has `active == false` and identifies an alert that
-must be removed from the watcher's local state.
+cannot match. A tombstone has `removed == true` (and `active == false`) and
+identifies an alert that must be purged from the watcher's local state. An
+entry with `active == false` and `removed == false` is a paused alert: keep it
+and mark it inactive. Always branch on `removed`, never on `active` alone.
 All paginated alert queries cap `limit` at `MAX_PAGE_SIZE` (100 IDs), so
 passing a larger value is safe and does not create an unbounded RPC simulation.
 
 **Returns:** `Vec<AlertConfig>` — live alerts matching `updated_at >= since`.
+
+---
+
+### `get_min_sync_ledger`
+
+Returns the oldest ledger sequence from which incremental sync is guaranteed to include every removal tombstone (`current_ledger - TOMBSTONE_TTL`, saturating at 0). If a client's `since_ledger` cursor is below this value it must fall back to a full resync.
+
+**Returns:** `u32`
 
 ---
 
