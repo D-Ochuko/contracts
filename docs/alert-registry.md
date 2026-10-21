@@ -762,6 +762,14 @@ passing a larger value is safe and does not create an unbounded RPC simulation.
 
 ---
 
+### `get_min_sync_ledger`
+
+Returns the oldest ledger sequence from which incremental sync is guaranteed to include every removal tombstone (`current_ledger - TOMBSTONE_TTL`, saturating at 0). If a client's `since_ledger` cursor is below this value it must fall back to a full resync.
+
+**Returns:** `u32`
+
+---
+
 ### `get_alerts_modified_since_ledger`
 
 Returns all alert configs whose `updated_ledger` sequence number is greater than or equal to `since_ledger`.

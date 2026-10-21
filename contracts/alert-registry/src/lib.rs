@@ -39,6 +39,13 @@ mod regression_tests;
 /// See `docs/ttl.md` for the full rationale.
 pub const DEFAULT_TTL: u32 = 17_280;
 
+/// Retention window, in ledgers, guaranteed for removal tombstones
+/// ([`DataKey::RemovedAlert`]). Approximately 7 days at the nominal 5-second
+/// ledger close time. A sync client whose cursor is older than
+/// [`AlertRegistry::get_min_sync_ledger`] may have missed tombstones and must
+/// do a full resync. See `docs/ttl.md`.
+pub const TOMBSTONE_TTL: u32 = 120_960;
+
 /// Upper bound on the TTL, in ledgers, that [`AlertRegistry::bump_alert`]
 /// applies.
 ///
@@ -2755,6 +2762,20 @@ impl AlertRegistry {
         Self::scan_alerts_modified(&env, offset, limit, |cfg| cfg.updated_ledger >= since_ledger)
     }
 
+    /// Return the oldest ledger sequence from which incremental sync is
+    /// guaranteed to be complete.
+    ///
+    /// Removal tombstones are retained for [`TOMBSTONE_TTL`] ledgers, so a
+    /// removal at ledger `L` is only guaranteed visible until
+    /// `L + TOMBSTONE_TTL`. A client whose sync cursor (the `since_ledger` it
+    /// would pass to [`Self::get_alerts_modified_since_ledger`]) is below this
+    /// value may have missed tombstones and must fall back to a full resync
+    /// (`since_ledger = 0`, discarding local state first).
+    #[must_use]
+    pub fn get_min_sync_ledger(env: Env) -> u32 {
+        env.ledger().sequence().saturating_sub(TOMBSTONE_TTL)
+    }
+
     /// Get the total number of alerts ever registered.
     ///
     /// This is a **monotonic counter** — it only increases and is never
@@ -3167,8 +3188,8 @@ impl AlertRegistry {
             .set(&DataKey::RemovedAlert(config_id), &tombstone);
         env.storage().persistent().extend_ttl(
             &DataKey::RemovedAlert(config_id),
-            DEFAULT_TTL,
-            DEFAULT_TTL,
+            TOMBSTONE_TTL,
+            TOMBSTONE_TTL,
         );
         env.storage()
             .persistent()
@@ -5672,6 +5693,29 @@ mod tests {
         assert!(!p.active && !p.removed);
         let r = results.get(1).unwrap();
         assert!(!r.active && r.removed);
+    }
+
+    // 22c. Tombstones outlive DEFAULT_TTL and the min sync ledger tracks TOMBSTONE_TTL
+    #[test]
+    fn test_tombstone_retention_and_min_sync_ledger() {
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let target = Address::generate(&env);
+        env.ledger().with_mut(|li| li.sequence_number = 100);
+        let id = client.register_alert(
+            &owner, &target, &str(&env, "A"), &hash64(&env), &vec![&env, str(&env, "rule:transfer")],
+        );
+        client.remove_alert(&owner, &id);
+        assert_eq!(client.get_min_sync_ledger(), 0);
+
+        // Past DEFAULT_TTL but within TOMBSTONE_TTL the tombstone is still served.
+        env.ledger().with_mut(|li| li.sequence_number = 100 + DEFAULT_TTL + 10);
+        let results = client.get_alerts_modified_since_ledger(&0u32, &0u32, &u32::MAX);
+        assert_eq!(results.len(), 1);
+        assert!(results.get(0).unwrap().removed);
+
+        env.ledger().with_mut(|li| li.sequence_number = 100 + TOMBSTONE_TTL + 5);
+        assert_eq!(client.get_min_sync_ledger(), 105);
     }
 
     // 23. since is exclusive of nothing — boundary value exactly equal is included
