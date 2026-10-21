@@ -1729,7 +1729,10 @@ impl AlertRegistry {
     ///
     /// # Events
     /// Emits `(Symbol("alert"), Symbol("pruned"))` with data
-    /// `(owner: Address, count: u32)` when at least one ID was removed.
+    /// `(owner: Address, count: u32, ids: Vec<u64>)` when at least one ID was
+    /// removed. `ids` lists the dropped alert IDs (at most
+    /// [`MAX_PRUNE_PER_CALL`] per pass); the alerts expired and no
+    /// `RemovedAlert` tombstone exists for them.
     pub fn prune_expired_alerts(env: Env, owner: Address) -> Result<u32, ContractError> {
         Self::assert_not_paused(&env)?;
         Ok(Self::prune_owner_index(&env, &owner))
@@ -3044,7 +3047,7 @@ impl AlertRegistry {
             Self::drop_dangling_ids(env, owner, &dangling, &kept);
             env.events().publish(
                 (symbol_short!("alert"), symbol_short!("pruned")),
-                (owner.clone(), dropped),
+                (owner.clone(), dropped, dangling),
             );
         }
 
