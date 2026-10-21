@@ -29,7 +29,10 @@ Emitted when a new alert is successfully registered.
 
 ### `alert.update`
 
-Emitted when an alert's rules or active flag are changed.
+Emitted when an alert's rules are changed via `update_alert`. Note that
+`set_alert_active` emits `alert.active` instead — indexers can subscribe to
+`alert.update` to detect rule changes only, and to `alert.active` to detect
+activation toggles without needing to re-fetch the alert.
 
 | Field | Value |
 |---|---|
@@ -38,6 +41,21 @@ Emitted when an alert's rules or active flag are changed.
 | Data | `(id: u64, owner: Address, active: bool)` |
 
 **Status:** ✅ implemented (`update_alert`)
+
+---
+
+### `alert.active`
+
+Emitted when an alert's active flag is toggled via `set_alert_active`. The
+rules are unchanged — only the `active` flag flips.
+
+| Field | Value |
+|---|---|
+| Topic 0 | `Symbol("alert")` |
+| Topic 1 | `Symbol("active")` |
+| Data | `(id: u64, owner: Address, active: bool)` |
+
+**Status:** ✅ implemented (`set_alert_active`)
 
 ---
 

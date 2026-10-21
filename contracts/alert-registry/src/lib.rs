@@ -1035,6 +1035,11 @@ impl AlertRegistry {
     /// the alert's rules. Use this endpoint when pausing or resuming an alert
     /// so a client cannot accidentally clear its rules with an empty vector.
     ///
+    /// # Events
+    /// Emits `(Symbol("alert"), Symbol("active"))` with data
+    /// `(id: u64, owner: Address, active: bool)`. Off-chain indexers can use
+    /// this topic to detect activation toggles without re-fetching the alert.
+    ///
     /// # Auth
     /// Requires a valid Stellar auth signature from `caller`, who must also
     /// own the alert.
@@ -1070,7 +1075,7 @@ impl AlertRegistry {
         Self::persist_alert(&env, config_id, &config);
 
         env.events().publish(
-            (symbol_short!("alert"), symbol_short!("update")),
+            (symbol_short!("alert"), symbol_short!("active")),
             (config_id, config.owner, active),
         );
         Ok(())
@@ -4041,6 +4046,8 @@ mod tests {
         assert_eq!(
             alert_client.get_watcher_registry().unwrap(),
             watcher_contract_id
+        );
+    }
     // 17b. clear_watcher_registry disables gating; set_watcher_registry can
     // re-enable it afterward.
     #[test]
@@ -6314,6 +6321,66 @@ mod tests {
         assert_eq!(after.updated_at, before.updated_at);
         assert_eq!(after.updated_ledger, before.updated_ledger);
         assert_eq!(after.active, before.active);
+    }
+
+    // Issue #382: set_alert_active emits alert.active (distinct from alert.update)
+    #[test]
+    fn test_set_alert_active_emits_alert_active_event() {
+        use soroban_sdk::{symbol_short, testutils::Events as _};
+
+        let (env, client) = setup();
+        let owner = Address::generate(&env);
+        let target = Address::generate(&env);
+
+        let id = client.register_alert(
+            &owner,
+            &target,
+            &str(&env, "Alert"),
+            &hash64(&env),
+            &vec![&env],
+        );
+
+        // Deactivate the alert
+        client.set_alert_active(&owner, &id, &false);
+
+        let events = env.events().all();
+        let active_event = events
+            .iter()
+            .find(|(_, topics, _)| {
+                topics.len() == 2
+                    && Symbol::from_val(&env, &topics.get(0).unwrap()) == symbol_short!("alert")
+                    && Symbol::from_val(&env, &topics.get(1).unwrap())
+                        == symbol_short!("active")
+            })
+            .expect("alert.active event must be emitted");
+
+        // Verify data shape: (id: u64, owner: Address, active: bool)
+        let (_, _, data) = active_event;
+        let (emitted_id, _emitted_owner, emitted_active): (u64, Address, bool) =
+            soroban_sdk::FromVal::from_val(&env, &data);
+        assert_eq!(emitted_id, id);
+        assert_eq!(emitted_active, false);
+
+        // Reactivate
+        client.set_alert_active(&owner, &id, &true);
+
+        let events = env.events().all();
+        let reactivate_event = events
+            .iter()
+            .rev()
+            .find(|(_, topics, _)| {
+                topics.len() == 2
+                    && Symbol::from_val(&env, &topics.get(0).unwrap()) == symbol_short!("alert")
+                    && Symbol::from_val(&env, &topics.get(1).unwrap())
+                        == symbol_short!("active")
+            })
+            .expect("alert.active event must be emitted on reactivation");
+
+        let (_, _, data) = reactivate_event;
+        let (emitted_id2, _emitted_owner2, emitted_active2): (u64, Address, bool) =
+            soroban_sdk::FromVal::from_val(&env, &data);
+        assert_eq!(emitted_id2, id);
+        assert!(emitted_active2);
     }
 
     // B-7. DEFAULT_TTL and MAX_TTL constants have the expected values
