@@ -171,6 +171,8 @@ pub enum DataKey {
 /// `[Symbol("Name"), ...]`, not as the bare symbol, so it would orphan the
 /// values already stored under these keys.
 ///
+/// Note: [`DataKey::PendingAdminTransfer`] is also stored in instance storage
+/// (via `env.storage().instance()`), even though it is a `DataKey` variant.
 /// Not every instance-storage entry lives here: [`DataKey`] variants such as
 /// [`DataKey::PendingAdminTransfer`] are also stored in instance storage, but
 /// they were introduced as `DataKey` variants and so keep that encoding.
@@ -188,6 +190,7 @@ pub mod instance_key {
     pub const LIMIT: Symbol = symbol_short!("LIMIT");
     /// `u32` per-contract alert limit (`0` = unlimited).
     pub const CLIMIT: Symbol = symbol_short!("CLIMIT");
+    /// `u32` ceiling on the total number of live alerts (`0` = none).
     /// `u32` ceiling on the number of **live** alerts (`0` = none).
     ///
     /// Counts live (non-removed) records, not the number ever registered: see
@@ -375,6 +378,7 @@ pub struct RegistryConfiguration {
     pub per_owner_alert_limit: u32,
     /// Maximum live alerts per target contract, or `0` for unlimited.
     pub per_contract_alert_limit: u32,
+    /// Maximum live alerts, or `0` for unlimited.
     /// Maximum live (non-removed) alerts registry-wide, or `0` for unlimited.
     pub global_alert_limit: u32,
     /// Configured watcher registry, if watcher-gating is enabled.
@@ -1004,6 +1008,8 @@ impl AlertRegistry {
             .unwrap_or(0u32)
     }
 
+    /// Set a global ceiling on the total number of live alerts
+    /// (admin only). A value of `0` means no limit.
     /// Set a global ceiling on the number of **live** alerts (admin only).
     /// A value of `0` means no limit.
     ///
@@ -3315,6 +3321,9 @@ impl AlertRegistry {
             .extend_ttl(&key, DEFAULT_TTL, DEFAULT_TTL);
     }
 
+    /// Reject registration once the total number of live alerts
+    /// (the monotonic [`instance_key::NEXT_ID`] counter) reaches the
+    /// configured global ceiling. A limit of `0` means no ceiling.
     /// Reject registration once the number of **live** alerts (the
     /// [`instance_key::LIVE`] counter, not the monotonic
     /// [`instance_key::NEXT_ID`] registration total) reaches the configured
@@ -3849,6 +3858,7 @@ impl AlertRegistry {
 
     /// Validates a vector of rule descriptors.
     ///
+    /// Ensures at most 50 rules are supplied, each rule matches a recognized
     /// Ensures at most [`MAX_RULES_PER_ALERT`] rules are supplied (derived from
     /// [`VALID_RULE_DESCRIPTORS`]), each rule matches a recognized descriptor,
     /// and no descriptor appears more than once.
