@@ -55,9 +55,12 @@ refreshed by any other mutator, so a proposed transfer lapses after its own
 **Removal tombstones.** `remove_alert`, `remove_alert_by_admin` and
 `batch_remove_alert` replace `Alert(id)` with a `RemovedAlert(id)` tombstone
 (`active == false`) so incremental sync can report the removal. The tombstone
-is written with `DEFAULT_TTL` and nothing extends it afterwards: `touch_alert`
-does not cover it and `bump_alert` cannot reach it. It is archived about 24
-hours after removal (see #360).
+is written with `TOMBSTONE_TTL` (120,960 ledgers, about 7 days) and nothing
+extends it afterwards: `touch_alert` does not cover it and `bump_alert` cannot
+reach it. `get_min_sync_ledger()` returns `current_ledger - TOMBSTONE_TTL`
+(saturating at 0), the oldest sync cursor guaranteed to see every removal. A
+client whose `since_ledger` cursor is below it may have missed tombstones and
+must do a full resync (discard local state, then sync from `0`).
 
 **Bulk deactivation cursor.** `deactivate_all_alerts` stores
 `DeactivationCursor(owner)` with `DEFAULT_TTL` only when a call stops at
@@ -229,8 +232,8 @@ pub const DEFAULT_TTL: u32 = 120_960;
 ```
 
 `ALERT_TRANSFER_EXPIRY_LEDGERS` and the `INSTANCE_BUMP_*` constants are separate
-and do not follow `DEFAULT_TTL`. The `RemovedAlert` tombstone also uses
-`DEFAULT_TTL`, so raising it extends how long removals stay visible to sync.
+and do not follow `DEFAULT_TTL`. The `RemovedAlert` tombstone uses its own
+`TOMBSTONE_TTL`, which sets how long removals stay visible to sync.
 
 ## Further Reading
 

@@ -13,8 +13,8 @@ After running `scripts/deploy.sh`, replace the placeholder values with the print
 
 | Contract | Address | WASM Hash |
 |---|---|---|
-| Alert Registry | `CDSO4GGZH7KBUQYKOIQDCMCFSRYEPOVDUX7Z4IB5TWNTLT2GDRKDQOYR` | `TODO` |
-| Watcher Registry | `CCSHRYACRNVSLC5NP3V2DL6LGID57TQT2TJXVUVXBBZX6SED6N3F7X6J` | `TODO` |
+| Alert Registry | `CDSO4GGZH7KBUQYKOIQDCMCFSRYEPOVDUX7Z4IB5TWNTLT2GDRKDQOYR` | `TODO` | `TODO` |
+| Watcher Registry | `CCSHRYACRNVSLC5NP3V2DL6LGID57TQT2TJXVUVXBBZX6SED6N3F7X6J` | `TODO` | `TODO` |
 
 Deployed and initialized on 2026-08-17. Verified end to end on-chain:
 `register_alert` → `get_alert`, then a full `propose_webhook` → `confirm_webhook`
@@ -86,4 +86,6 @@ The testnet contracts are deployed and administered by the identity configured v
 
 | Date | Network | Contract | Address | WASM Hash | CLI Version | Notes |
 |---|---|---|---|---|---|---|
+| 2026-10-20 | Testnet | Alert Registry | `CDSO4GGZH7KBUQYKOIQDCMCFSRYEPOVDUX7Z4IB5TWNTLT2GDRKDQOYR` | `TODO` | verified locally against quickstart |
+| 2026-10-20 | Testnet | Watcher Registry | `CCSHRYACRNVSLC5NP3V2DL6LGID57TQT2TJXVUVXBBZX6SED6N3F7X6J` | `TODO` | verified locally against quickstart |
 | — | — | — | — | — | — | Initial placeholder |
